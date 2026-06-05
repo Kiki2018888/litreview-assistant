@@ -1,0 +1,31 @@
+# Alembic Migrations
+
+This directory contains database schema migration scripts.
+
+## Common Commands
+
+```bash
+# Apply all migrations to head
+alembic upgrade head
+
+# Rollback one revision
+alembic downgrade -1
+
+# Create a new empty migration
+alembic revision -m "message"
+
+# Auto-generate migration by diffing models vs database
+alembic revision --autogenerate -m "message"
+
+# Show current revision
+alembic current
+
+# Show migration history
+alembic history
+```
+
+## Configuration Notes
+
+- `env.py` integrates `backend.models.tables.Base.metadata` for autogenerate
+- Database URL comes from `backend.services.db.DATABASE_URL` (no need to edit alembic.ini)
+- `render_as_batch=True` is enabled for SQLite ALTER TABLE compatibility
