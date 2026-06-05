@@ -96,6 +96,10 @@ htmlcov/
 .tox/
 .nox/
 
+# ---------- Temp / Debug Scripts ----------
+backend/_*.py
+backend/_verify_result.txt
+
 # ---------- Security ----------
 *.pem
 *.key

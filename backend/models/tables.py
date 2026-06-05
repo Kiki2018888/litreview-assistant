@@ -26,6 +26,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -42,11 +43,6 @@ class Base(DeclarativeBase):
 def _uuid4() -> str:
     """生成 UUID v4 字符串."""
     return str(uuid.uuid4())
-
-
-def _utcnow() -> datetime:
-    """返回 UTC 当前时间（naive datetime，SQLite 友好）."""
-    return datetime.utcnow()
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +119,7 @@ class Paper(Base):
     )
     is_scanned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow
+        DateTime, nullable=False, server_default=func.now()
     )
     extraction_attempts: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0
@@ -131,7 +127,7 @@ class Paper(Base):
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     extracted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
 
@@ -145,6 +141,7 @@ class PaperPage(Base):
 
     __tablename__ = "paper_pages"
     __table_args__ = (
+        Index("ix_paper_pages_paper_id", "paper_id"),
         UniqueConstraint("paper_id", "page_number", name="uq_paper_pages_paper_page"),
     )
 
@@ -208,7 +205,7 @@ class PaperBlock(Base):
     block_name: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
     content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
 
@@ -227,10 +224,10 @@ class Batch(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     paper_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow
+        DateTime, nullable=False, server_default=func.now()
     )
 
 
@@ -283,10 +280,10 @@ class ChatSession(Base):
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     messages: Mapped[Optional[list[Any]]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow
+        DateTime, nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
 
@@ -309,7 +306,7 @@ class PaperAuditLog(Base):
     action: Mapped[str] = mapped_column(String(50), nullable=False)
     detail: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow
+        DateTime, nullable=False, server_default=func.now()
     )
 
 
@@ -322,6 +319,9 @@ class Setting(Base):
     """应用配置（API Key / 模型 / 主题等）."""
 
     __tablename__ = "settings"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_settings_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     api_key_encrypted: Mapped[Optional[bytes]] = mapped_column(BLOB, nullable=True)
@@ -330,7 +330,7 @@ class Setting(Base):
     max_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     theme: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
 

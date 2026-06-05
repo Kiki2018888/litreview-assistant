@@ -8,6 +8,7 @@ Create Date: 2026-06-05 10:58:07.165926
 from typing import Sequence, Union
 
 import sqlalchemy as sa
+import sqlite3
 from alembic import op
 
 
@@ -28,7 +29,21 @@ def upgrade() -> None:
     维护全部 7 个字段的同步。
     """
     # ------------------------------------------------------------------
-    # 1. papers — 文献元数据
+    # 1. batches — 文献批次（必须在 papers 之前，papers 有 FK 引用）
+    # ------------------------------------------------------------------
+    op.create_table(
+        "batches",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("name", sa.String(length=100), nullable=False),
+        sa.Column("description", sa.Text(), nullable=True),
+        sa.Column("paper_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("(datetime('now'))")),
+        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("(datetime('now'))")),
+        sa.PrimaryKeyConstraint("id", name="pk_batches"),
+    )
+
+    # ------------------------------------------------------------------
+    # 2. papers — 文献元数据
     # ------------------------------------------------------------------
     op.create_table(
         "papers",
@@ -62,7 +77,7 @@ def upgrade() -> None:
     op.create_index("ix_papers_batch_id", "papers", ["batch_id"])
 
     # ------------------------------------------------------------------
-    # 2. paper_pages — 按页原文
+    # 3. paper_pages — 按页原文
     # ------------------------------------------------------------------
     op.create_table(
         "paper_pages",
@@ -75,9 +90,10 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name="pk_paper_pages"),
         sa.UniqueConstraint("paper_id", "page_number", name="uq_paper_pages_paper_page"),
     )
+    op.create_index("ix_paper_pages_paper_id", "paper_pages", ["paper_id"])
 
     # ------------------------------------------------------------------
-    # 3. extracted_data — 结构化摘要
+    # 4. extracted_data — 结构化摘要
     # ------------------------------------------------------------------
     op.create_table(
         "extracted_data",
@@ -97,7 +113,7 @@ def upgrade() -> None:
     )
 
     # ------------------------------------------------------------------
-    # 4. paper_blocks — 论文撰写分块
+    # 5. paper_blocks — 论文撰写分块
     # ------------------------------------------------------------------
     op.create_table(
         "paper_blocks",
@@ -111,20 +127,6 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name="pk_paper_blocks"),
         sa.UniqueConstraint("block_name", name="uq_paper_blocks_block_name"),
-    )
-
-    # ------------------------------------------------------------------
-    # 5. batches — 文献批次
-    # ------------------------------------------------------------------
-    op.create_table(
-        "batches",
-        sa.Column("id", sa.String(length=36), nullable=False),
-        sa.Column("name", sa.String(length=100), nullable=False),
-        sa.Column("description", sa.Text(), nullable=True),
-        sa.Column("paper_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("(datetime('now'))")),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("(datetime('now'))")),
-        sa.PrimaryKeyConstraint("id", name="pk_batches"),
     )
 
     # ------------------------------------------------------------------
@@ -187,6 +189,7 @@ def upgrade() -> None:
         sa.Column("max_tokens", sa.Integer(), nullable=True),
         sa.Column("theme", sa.String(length=20), nullable=True),
         sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("(datetime('now'))")),
+        sa.CheckConstraint("id = 1", name="ck_settings_id"),
         sa.PrimaryKeyConstraint("id", name="pk_settings"),
     )
 
@@ -286,10 +289,29 @@ def upgrade() -> None:
         """
     )
 
+    # ------------------------------------------------------------------
+    # 12. 手动写入 alembic_version（SQLite 隐式提交补偿）
+    # SQLite 的 CREATE TRIGGER / CREATE VIRTUAL TABLE 等 DDL 会隐式提交
+    # 当前事务，破坏 Alembic 的 context.begin_transaction() 事务边界。
+    # op.execute() 复用 Alembic 连接，版本写入仍可能随事务回滚丢失。
+    # 此处通过独立 sqlite3 连接直接写入，确保版本记录持久化。
+    # Alembic 后续重复写入产生的 UNIQUE constraint 错误由 env.py 过滤。
+    # ------------------------------------------------------------------
+    engine = op.get_bind().engine
+    db_url = str(engine.url)
+    # SQLite URL 格式: sqlite:///path/to/db (Windows 绝对路径为 sqlite:///C:/...)
+    db_path = db_url.replace("sqlite:///", "", 1)
+    _conn = sqlite3.connect(db_path)
+    _conn.execute("DELETE FROM alembic_version WHERE version_num IS NOT NULL")
+    _conn.execute("INSERT INTO alembic_version (version_num) VALUES ('ec9feb3c397e')")
+    _conn.commit()
+    _conn.close()
+
 
 def downgrade() -> None:
     """回退到空 schema."""
     # 删除顺序：先删触发器与虚拟表（依赖 papers），再删依赖表，最后删主表
+    # 触发器与 FTS 只能用 raw SQL（无 Alembic 抽象）
     op.execute("DROP TRIGGER IF EXISTS papers_ai")
     op.execute("DROP TRIGGER IF EXISTS papers_au")
     op.execute("DROP TRIGGER IF EXISTS papers_ad")
@@ -298,7 +320,7 @@ def downgrade() -> None:
     op.execute("DROP TRIGGER IF EXISTS extracted_data_ad")
     op.execute("DROP TABLE IF EXISTS papers_fts")
 
-    # 删除依赖 papers 的表
+    # 依赖 papers 的表
     op.drop_table("paper_audit_logs")
     op.drop_table("chat_sessions")
     op.drop_table("paper_tags")
@@ -312,3 +334,16 @@ def downgrade() -> None:
     op.drop_table("settings")
     op.drop_table("paper_blocks")
     op.drop_table("batches")
+
+    # 手动清理 alembic_version（SQLite DDL 隐式提交导致 Alembic 的版本删除失效）
+    engine = op.get_bind().engine
+    db_path = str(engine.url).replace("sqlite:///", "", 1)
+    _conn = sqlite3.connect(db_path)
+    _conn.execute("DELETE FROM alembic_version WHERE version_num = 'ec9feb3c397e'")
+    _conn.commit()
+    _conn.close()
+
+
+
+
+
