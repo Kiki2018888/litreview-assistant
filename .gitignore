@@ -66,6 +66,7 @@ out/
 # ---------- IDE / Editor ----------
 .idea/
 .vscode/
+.codebuddy/
 *.swp
 *.swo
 *~
