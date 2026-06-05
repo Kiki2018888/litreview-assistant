@@ -1,0 +1,39 @@
+# ResearchAssistant Git Commit Message Template
+# 格式：<type>: <subject>
+#
+# type 说明：
+#   feat     新功能（如新增 API、新增组件）
+#   fix      Bug 修复
+#   refactor 代码重构（不改变功能）
+#   docs     文档更新（README、API 文档等）
+#   test     测试相关（新增/修改测试）
+#   chore    构建/工具链/依赖更新
+#   perf     性能优化
+#   style    代码格式调整（不影响功能）
+#   db       数据库变更（Alembic migration）
+#   security 安全相关修复
+#
+# 示例：
+#   feat: add batch PDF upload API with multipart support
+#   fix: resolve SSE stream leak on client disconnect
+#   db: add papers_fts virtual table for full-text search
+#   refactor: extract pdf parser into standalone service
+#   docs: update API_CONTRACT.md for literature chat endpoints
+#   test: add pytest coverage for batch-extract SSE flow
+#
+# 规则：
+# 1. subject 使用英文，首字母小写，末尾不加句号
+# 2. 如需要详细说明，空一行后写 body（每行 ≤ 72 字符）
+# 3. 涉及多个模块时，在 body 中列出变更文件
+# 4. 数据库变更必须标注 migration revision 名
+# 5. 安全相关修复必须标注影响范围
+# 6. 修复 Bug 时，在 body 中描述根因，而非仅描述现象
+#
+# 多行示例：
+# feat: add literature chat SSE endpoint for cross-paper Q&A
+#
+# - Implement POST /api/v1/literature/chat with Server-Sent Events
+# - Concatenate extracted abstracts from selected papers
+# - Use kimi-k2-6 with temperature 0.3 and 120s timeout
+# - Add chat_sessions table for conversation history persistence
+# - pytest: 3 new tests for SSE streaming and error handling
