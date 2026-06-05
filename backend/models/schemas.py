@@ -168,7 +168,6 @@ class BatchCreate(BatchBase):
 class BatchUpdate(_ORMModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     description: Optional[str] = None
-    paper_count: Optional[int] = None
 
 
 class BatchResponse(BatchBase):
@@ -203,6 +202,87 @@ class PaperTagsUpdateRequest(_ORMModel):
 class PaperTagsUpdateResponse(_ORMModel):
     id: str
     tags: list[str]
+
+
+class PaperListItem(_ORMModel):
+    """文献列表项（轻量，不含 pages 与 extracted_data）."""
+
+    id: str
+    title: Optional[str] = None
+    authors: Optional[list[str]] = None
+    year: Optional[int] = None
+    journal: Optional[str] = None
+    status: PaperStatus
+    tags: list[str] = Field(default_factory=list)
+    batch_id: Optional[str] = None
+    created_at: datetime
+
+
+class PaperDetailResponse(PaperResponse):
+    """文献详情（含 tags 与 extracted_data）."""
+
+    tags: list[str] = Field(default_factory=list)
+    extracted_data: Optional[ExtractedDataResponse] = None
+
+
+class PaperUploadResult(_ORMModel):
+    """单文件上传结果."""
+
+    id: str
+    title: Optional[str] = None
+    status: PaperStatus
+    page_count: Optional[int] = None
+
+
+class PaperUploadResponse(_ORMModel):
+    """批量上传响应."""
+
+    results: list[PaperUploadResult]
+
+
+class PaperParseResponse(_ORMModel):
+    """手动触发解析响应."""
+
+    paper_id: str
+    page_count: Optional[int] = None
+    status: PaperStatus
+
+
+class TagSummaryItem(_ORMModel):
+    """单个标签汇总."""
+
+    tag: str
+    count: int
+
+
+class TagSummaryResponse(_ORMModel):
+    """标签汇总响应."""
+
+    tags: list[TagSummaryItem]
+
+
+class PaperStatsResponse(_ORMModel):
+    """文献统计响应."""
+
+    total: int = 0
+    pending: int = 0
+    completed: int = 0
+    failed: int = 0
+    extract_failed: int = 0
+
+
+class DeleteResponse(_ORMModel):
+    """删除响应."""
+
+    success: bool = True
+
+
+class PageTextResponse(_ORMModel):
+    """单页文本响应."""
+
+    page_number: int
+    text_content: Optional[str] = None
+    char_count: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +417,16 @@ __all__ = [
     "PaperTagResponse",
     "PaperTagsUpdateRequest",
     "PaperTagsUpdateResponse",
+    "PaperListItem",
+    "PaperDetailResponse",
+    "PaperUploadResult",
+    "PaperUploadResponse",
+    "PaperParseResponse",
+    "TagSummaryItem",
+    "TagSummaryResponse",
+    "PaperStatsResponse",
+    "DeleteResponse",
+    "PageTextResponse",
     # 7. chat_sessions
     "ChatMessage",
     "ChatSessionBase",
