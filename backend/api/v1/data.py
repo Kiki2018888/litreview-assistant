@@ -26,6 +26,78 @@ router = APIRouter(prefix="/api/v1/data", tags=["data"])
 
 
 # ---------------------------------------------------------------------------
+# FTS5 重建（Alembic 初始化等价逻辑）
+# ---------------------------------------------------------------------------
+
+_FTS5_SQL = [
+    # 虚拟表
+    """CREATE VIRTUAL TABLE IF NOT EXISTS papers_fts USING fts5(
+        title, authors, journal, keywords, background, methods, conclusion
+    )""",
+    # papers 表触发器
+    """CREATE TRIGGER IF NOT EXISTS papers_ai AFTER INSERT ON papers
+    BEGIN
+        INSERT INTO papers_fts(rowid, title, authors, journal, keywords, background, methods, conclusion)
+        VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.authors, ''),
+                COALESCE(new.journal, ''), '', '', '', '');
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS papers_au AFTER UPDATE ON papers
+    BEGIN
+        UPDATE papers_fts
+        SET title = COALESCE(new.title, ''),
+            authors = COALESCE(new.authors, ''),
+            journal = COALESCE(new.journal, '')
+        WHERE rowid = old.rowid;
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS papers_ad AFTER DELETE ON papers
+    BEGIN
+        DELETE FROM papers_fts WHERE rowid = old.rowid;
+    END""",
+    # extracted_data 表触发器
+    """CREATE TRIGGER IF NOT EXISTS extracted_data_ai AFTER INSERT ON extracted_data
+    BEGIN
+        UPDATE papers_fts
+        SET keywords = COALESCE(new.keywords, ''),
+            background = COALESCE(new.background, ''),
+            methods = COALESCE(new.methods, ''),
+            conclusion = COALESCE(new.conclusion, '')
+        WHERE rowid = (SELECT rowid FROM papers WHERE id = new.paper_id);
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS extracted_data_au AFTER UPDATE ON extracted_data
+    BEGIN
+        UPDATE papers_fts
+        SET keywords = COALESCE(new.keywords, ''),
+            background = COALESCE(new.background, ''),
+            methods = COALESCE(new.methods, ''),
+            conclusion = COALESCE(new.conclusion, '')
+        WHERE rowid = (SELECT rowid FROM papers WHERE id = new.paper_id);
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS extracted_data_ad AFTER DELETE ON extracted_data
+    BEGIN
+        UPDATE papers_fts
+        SET keywords = '', background = '', methods = '', conclusion = ''
+        WHERE rowid = (SELECT rowid FROM papers WHERE id = old.paper_id);
+    END""",
+]
+
+
+def _init_fts5() -> None:
+    """创建 FTS5 虚拟表和同步触发器（等价于 Alembic upgrade head 中 FTS5 部分）.
+
+    Base.metadata.create_all() 不涵盖 FTS5 虚拟表和触发器（这些不是 ORM 模型），
+    reset-db 流程中 init_db() 之后必须额外调用本函数。
+    """
+    db = SessionLocal()
+    try:
+        for stmt in _FTS5_SQL:
+            db.execute(text(stmt))
+        db.commit()
+        logger.info("FTS5 虚拟表和同步触发器已创建（%d 条语句）", len(_FTS5_SQL))
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # localhost 守卫
 # ---------------------------------------------------------------------------
 
@@ -165,9 +237,11 @@ def reset_db(body: ResetDbRequest, request: Request):
     if _FALLBACK_KEY_FILE.exists():
         os.remove(str(_FALLBACK_KEY_FILE))
 
-    # 5. 重新初始化
+    # 5. 重新初始化（ORM 表）
     init_db()
-    logger.info("数据库已重新初始化")
+    # 6. 重建 FTS5 虚拟表和同步触发器（init_db 不创建 FTS5）
+    _init_fts5()
+    logger.info("数据库已重新初始化（含 FTS5）")
 
     return {
         "success": True,

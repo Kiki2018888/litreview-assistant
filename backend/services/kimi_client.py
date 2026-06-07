@@ -37,13 +37,8 @@ logger = logging.getLogger(__name__)
 def _get_api_key() -> str:
     """从 settings 表读取 API Key（解密后的明文）.
 
-    查询 settings 表的 api_key_encrypted 字段。当前 MVP 阶段
-    settings 表尚未实现解密逻辑（M6 实现），此函数作为占位：
-    - settings 表有 api_key_encrypted 字段（BLOB 类型）
-    - 加密/解密在 M6 设置 API 中完整实现
-    - MVP 阶段直接读取并尝试解密
-
-    如果 api_key_encrypted 为 None 或为空，抛出提示友好的 ValueError。
+    委托 M6 settings 模块的 Fernet 解密逻辑读取并解密 API Key。
+    如果 settings 表中没有 API Key 或解密失败，抛出友好提示。
 
     Returns:
         解密后的 API Key 字符串。
@@ -51,39 +46,20 @@ def _get_api_key() -> str:
     Raises:
         ValueError: API Key 未配置（提示用户前往设置页配置）。
     """
-    db = SessionLocal()
     try:
-        from sqlalchemy import text
-        result = db.execute(text(
-            "SELECT api_key_encrypted FROM settings WHERE id = 1"
-        )).fetchone()
+        from backend.api.v1.settings import _get_decrypted_api_key
 
-        if result is None or result[0] is None:
-            raise ValueError(
-                "API Key 未配置。请前往「设置」页面输入 Kimi API Key，"
-                "API Key 将加密存储在本地数据库中。"
-            )
-
-        encrypted = result[0]
-        if isinstance(encrypted, bytes) and len(encrypted) == 0:
-            raise ValueError(
-                "API Key 未配置。请前往「设置」页面输入 Kimi API Key，"
-                "API Key 将加密存储在本地数据库中。"
-            )
-
-        # MVP 阶段：若 settings 表有值，直接返回（M6 前暂不加密）
-        # 后续 M6 实现 keyring + Fernet 加解密后替换此处逻辑
-        try:
-            return encrypted.decode("utf-8")
-        except (UnicodeDecodeError, AttributeError):
-            # 已加密的 BLOB，但尚未实现解密 → 提示用户
-            raise ValueError(
-                "API Key 已加密存储但当前版本尚未支持解密。"
-                "请前往「设置」页面重新配置 API Key。"
-            ) from None
-
-    finally:
-        db.close()
+        plain = _get_decrypted_api_key()
+        if plain:
+            return plain
+        raise ValueError(
+            "API Key 未配置。请前往「设置」页面输入 Kimi API Key，"
+            "API Key 将加密存储在本地数据库中。"
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            f"无法加载设置模块，请确认应用已正确初始化: {exc}"
+        ) from exc
 
 
 def _ensure_settings_row() -> None:
