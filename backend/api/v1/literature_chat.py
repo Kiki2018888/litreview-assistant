@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from fastapi.responses import StreamingResponse
@@ -189,7 +189,7 @@ def _save_chat_messages(
 
 
 @router.post("/chat")
-async def cross_literature_chat(body: CrossLiteratureChatRequest):
+async def cross_literature_chat(body: CrossLiteratureChatRequest, request: Request):
     """跨文献问答 — 基于多篇文献摘要的 AI 综述.
 
     支持 paper_ids 或 batch_id 二选一指定文献范围。
@@ -268,24 +268,21 @@ async def cross_literature_chat(body: CrossLiteratureChatRequest):
         nonlocal full_answer
         client = KimiClient()
 
-        # 构建消息列表
         messages: list = history_messages + [
             {"role": "user", "content": system_prompt},
         ]
 
         try:
-            stream = await client._client.chat.completions.create(
-                model=DEFAULT_MODEL,
+            async for chunk in client.chat_stream(
                 messages=messages,
+                model=DEFAULT_MODEL,
                 temperature=DEFAULT_TEMPERATURE,
                 max_tokens=_CHAT_MAX_TOKENS,
-                stream=True,
-            )
-            async for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    full_answer += delta.content
-                    yield _sse_msg({"type": "chunk", "content": delta.content})
+            ):
+                if await request.is_disconnected():
+                    break
+                full_answer += chunk
+                yield _sse_msg({"type": "chunk", "content": chunk})
 
         except Exception as exc:
             logger.error("跨文献问答失败: %s", exc)
@@ -330,6 +327,7 @@ async def cross_literature_chat(body: CrossLiteratureChatRequest):
 async def single_paper_chat(
     paper_id: str,
     body: SinglePaperChatRequest,
+    request: Request,
 ):
     """单篇精读问答 — 基于全文或摘要的深度问答.
 
@@ -408,18 +406,16 @@ async def single_paper_chat(
         ]
 
         try:
-            stream = await client._client.chat.completions.create(
-                model=DEFAULT_MODEL,
+            async for chunk in client.chat_stream(
                 messages=messages,
+                model=DEFAULT_MODEL,
                 temperature=DEFAULT_TEMPERATURE,
                 max_tokens=_CHAT_MAX_TOKENS,
-                stream=True,
-            )
-            async for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    full_answer += delta.content
-                    yield _sse_msg({"type": "chunk", "content": delta.content})
+            ):
+                if await request.is_disconnected():
+                    break
+                full_answer += chunk
+                yield _sse_msg({"type": "chunk", "content": chunk})
 
         except Exception as exc:
             logger.error("单篇精读问答失败 paper_id=%s: %s", paper_id, exc)

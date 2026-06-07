@@ -10,13 +10,14 @@ import json
 import logging
 import uuid
 from datetime import datetime
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from fastapi.responses import StreamingResponse
 
-from backend.config import DEFAULT_MODEL, DEFAULT_TEMPERATURE, MAX_RETRIES
+from backend.config import DEFAULT_MODEL, DEFAULT_TEMPERATURE, MAX_RETRIES, RETRY_BASE_DELAY
 from backend.models.tables import Batch, ExtractedData, Paper, PaperPage, PaperStatus
 from backend.services.db import SessionLocal
 from backend.services.extract_prompt import build_extract_prompt
@@ -38,7 +39,7 @@ _BATCH_INTERVAL = 1.0  # 篇间间隔，秒
 class BatchExtractRequest(BaseModel):
     """批量提取请求."""
 
-    batch_id: str = Field(..., description="批次 ID")
+    batch_id: Optional[str] = Field(None, description="批次 ID（可选，不传则提取全局所有 pending 文献）")
 
 
 # ---------------------------------------------------------------------------
@@ -119,42 +120,52 @@ def _sse_msg(data: dict) -> str:
 
 
 @router.post("/batch-extract")
-async def batch_extract(body: BatchExtractRequest):
+async def batch_extract(body: BatchExtractRequest, request: Request):
     """批量 AI 摘要提取（SSE 进度流）.
 
-    获取批次中所有 pending 文献，串行提取，篇间隔 ≥ 1 秒。
-    每完成一篇发送 progress 事件，全部完成后发送 done。
+    - 有 batch_id 时仅提取该批次 pending 文献
+    - 无 batch_id 时提取全局所有 pending 文献
+    - 串行提取，篇间隔 ≥ 1 秒，支持客户端断开检测
     """
-    # 校验批次
     db = SessionLocal()
     try:
-        batch = db.query(Batch).filter(Batch.id == body.batch_id).first()
-        if not batch:
-            raise HTTPException(status_code=404, detail="批次不存在")
-
-        papers = (
-            db.query(Paper)
-            .filter(
-                Paper.batch_id == body.batch_id,
-                Paper.status == PaperStatus.PENDING.value,
-                Paper.is_scanned == False,  # noqa: E712
+        if body.batch_id:
+            batch = db.query(Batch).filter(Batch.id == body.batch_id).first()
+            if not batch:
+                raise HTTPException(status_code=404, detail="批次不存在")
+            papers = (
+                db.query(Paper)
+                .filter(
+                    Paper.batch_id == body.batch_id,
+                    Paper.status == PaperStatus.PENDING.value,
+                    Paper.is_scanned == False,  # noqa: E712
+                )
+                .order_by(Paper.created_at)
+                .all()
             )
-            .order_by(Paper.created_at)
-            .all()
-        )
+        else:
+            papers = (
+                db.query(Paper)
+                .filter(
+                    Paper.status == PaperStatus.PENDING.value,
+                    Paper.is_scanned == False,  # noqa: E712
+                )
+                .order_by(Paper.created_at)
+                .all()
+            )
         total = len(papers)
     finally:
         db.close()
 
     if total == 0:
         async def empty_gen():
-            yield _sse_msg( {
+            yield _sse_msg({
                 "type": "done",
                 "success_count": 0,
                 "fail_count": 0,
-                "message": "批次中没有待处理的文献",
+                "message": "没有待处理的文献",
             })
-        return EventSourceResponse(empty_gen())
+        return StreamingResponse(empty_gen(), media_type="text/event-stream")
 
     async def event_generator():
         success_count = 0
@@ -162,6 +173,11 @@ async def batch_extract(body: BatchExtractRequest):
         client = KimiClient()
 
         for idx, paper in enumerate(papers, start=1):
+            # ── 客户端断开检测 ──
+            if await request.is_disconnected():
+                logger.info("批提取客户端断开，已处理 %d/%d", idx - 1, total)
+                break
+
             paper_id = paper.id
             display_title = paper.title or paper_id[:8]
 
@@ -173,7 +189,6 @@ async def batch_extract(body: BatchExtractRequest):
                 db_text.close()
 
             if not full_text.strip():
-                # 全文为空 → 标记失败，继续
                 db_f1 = SessionLocal()
                 try:
                     p = db_f1.query(Paper).filter(Paper.id == paper_id).first()
@@ -185,7 +200,7 @@ async def batch_extract(body: BatchExtractRequest):
                     db_f1.close()
 
                 fail_count += 1
-                yield _sse_msg( {
+                yield _sse_msg({
                     "type": "progress",
                     "current": idx,
                     "total": total,
@@ -212,7 +227,10 @@ async def batch_extract(body: BatchExtractRequest):
             finally:
                 db_st.close()
 
-            yield _sse_msg( {
+            if await request.is_disconnected():
+                break
+
+            yield _sse_msg({
                 "type": "progress",
                 "current": idx,
                 "total": total,
@@ -221,29 +239,44 @@ async def batch_extract(body: BatchExtractRequest):
                 "title": display_title,
             })
 
-            # ── 调用 Kimi JSON Mode ──
+            # ── 调用 Kimi JSON Mode（带指数退避重试，对齐 kimi_client.py）──
             full_response = ""
             extract_ok = False
+            last_error: Optional[Exception] = None
 
-            try:
-                stream = await client._client.chat.completions.create(
-                    model=DEFAULT_MODEL,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=DEFAULT_TEMPERATURE,
-                    max_tokens=_EXTRACT_MAX_TOKENS,
-                    stream=True,
-                    response_format={"type": "json_object"},
-                )
-                async for chunk in stream:
-                    delta = chunk.choices[0].delta
-                    if delta.content:
-                        full_response += delta.content
-                extract_ok = True
-            except Exception as exc:
-                logger.error("批量提取失败 paper_id=%s: %s", paper_id, exc)
-                full_response = ""
+            for attempt in range(MAX_RETRIES + 1):
+                if await request.is_disconnected():
+                    break
+                try:
+                    completion = await client._client.chat.completions.create(
+                        model=DEFAULT_MODEL,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=DEFAULT_TEMPERATURE,
+                        max_tokens=_EXTRACT_MAX_TOKENS,
+                        response_format={"type": "json_object"},
+                    )
+                    full_response = completion.choices[0].message.content or ""
+                    extract_ok = True
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < MAX_RETRIES:
+                        delay = RETRY_BASE_DELAY * (2 ** attempt)
+                        logger.warning(
+                            "批提取 API 失败 paper_id=%s (尝试 %d/%d)，%0.1fs 后重试: %s",
+                            paper_id, attempt + 1, MAX_RETRIES + 1, delay, exc,
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(
+                            "批提取失败 paper_id=%s，已用尽 %d 次重试: %s",
+                            paper_id, MAX_RETRIES + 1, exc,
+                        )
 
-            # ── 处理结果 ──
+            if not extract_ok and last_error:
+                full_response = str(last_error)
+
+            # ── 解析 JSON ──
             if extract_ok:
                 try:
                     extracted = _parse_extracted_json(full_response)
@@ -251,6 +284,7 @@ async def batch_extract(body: BatchExtractRequest):
                     extract_ok = False
                     full_response = str(e)
 
+            # ── 持久化结果 ──
             db_res = SessionLocal()
             try:
                 p = db_res.query(Paper).filter(Paper.id == paper_id).first()
@@ -262,7 +296,6 @@ async def batch_extract(body: BatchExtractRequest):
                     p.extracted_at = datetime.utcnow()
                     p.last_error = None
                     _save_extracted(db_res, paper_id, extracted)
-                    # 补充元数据
                     if extracted.get("title") and not p.title:
                         p.title = extracted["title"]
                     if extracted.get("authors") and not p.authors:
@@ -273,7 +306,7 @@ async def batch_extract(body: BatchExtractRequest):
                         p.journal = extracted["journal"]
                     db_res.commit()
                     success_count += 1
-                    yield _sse_msg( {
+                    yield _sse_msg({
                         "type": "progress",
                         "current": idx,
                         "total": total,
@@ -290,7 +323,7 @@ async def batch_extract(body: BatchExtractRequest):
                     p.last_error = (full_response or "未知错误")[:500]
                     db_res.commit()
                     fail_count += 1
-                    yield _sse_msg( {
+                    yield _sse_msg({
                         "type": "progress",
                         "current": idx,
                         "total": total,
@@ -306,7 +339,7 @@ async def batch_extract(body: BatchExtractRequest):
             await asyncio.sleep(_BATCH_INTERVAL)
 
         # ── done ──
-        yield _sse_msg( {
+        yield _sse_msg({
             "type": "done",
             "success_count": success_count,
             "fail_count": fail_count,
