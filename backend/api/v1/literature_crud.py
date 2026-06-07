@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -86,6 +87,26 @@ def _save_pages(db: Session, paper_id: str, pages: list[PageInfo]) -> int:
 def _clear_pages(db: Session, paper_id: str) -> None:
     """清空指定文献的所有页面记录."""
     db.execute(delete(PaperPage).where(PaperPage.paper_id == paper_id))
+
+
+def escape_fts_query(query: str) -> str:
+    """转义用户输入，安全用于 FTS5 MATCH.
+
+    策略：
+    1. 移除 FTS5 操作符（* - " ( )）避免语法错误
+    2. 双引号包裹 → 短语匹配，防止 AND/OR/NEAR 被解析为布尔操作符
+    3. 空/无效输入返回空字符串，调用方返回 400 或空结果
+    """
+    query = query.strip()
+    if not query:
+        return ""
+    # 移除 FTS5 特殊字符
+    cleaned = re.sub(r'[*"()\-]', ' ', query)
+    # 合并连续空白
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    if not cleaned:
+        return ""
+    return f'"{cleaned}"'
 
 
 # ===================================================================
@@ -197,7 +218,7 @@ async def upload_pdfs(
         )
 
     db.commit()
-    return PaperUploadResponse(results=results)
+    return PaperUploadResponse(uploaded=results)
 
 
 # -------------------------------------------------------------------
@@ -234,6 +255,7 @@ def get_stats(db: Session = Depends(get_db)) -> PaperStatsResponse:
     return PaperStatsResponse(
         total=total,
         pending=counts.get("pending", 0),
+        extracting=counts.get("extracting", 0),
         completed=counts.get("completed", 0),
         failed=counts.get("failed", 0),
         extract_failed=counts.get("extract_failed", 0),
@@ -263,10 +285,19 @@ def list_papers(
 
     # ── FTS5 全文搜索 ──
     if search:
-        fts_ids = db.execute(
-            text("SELECT rowid FROM papers_fts WHERE papers_fts MATCH :q"),
-            {"q": search},
-        ).scalars().all()
+        safe_query = escape_fts_query(search)
+        if not safe_query:
+            return ListResponse(items=[], total=0, page=page, page_size=page_size)
+        try:
+            fts_ids = db.execute(
+                text("SELECT rowid FROM papers_fts WHERE papers_fts MATCH :q"),
+                {"q": safe_query},
+            ).scalars().all()
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail=f"无效的搜索查询，请尝试更换关键词",
+            )
         if not fts_ids:
             return ListResponse(items=[], total=0, page=page, page_size=page_size)
         stmt = stmt.where(literal_column("rowid").in_(fts_ids))
@@ -345,6 +376,11 @@ async def reparse_paper(
         raise HTTPException(status_code=404, detail="文献不存在")
 
     _clear_pages(db, paper_id)
+    # 清除旧的结构化摘要，避免 AI 问答基于过期信息
+    db.execute(delete(ExtractedData).where(ExtractedData.paper_id == paper_id))
+    # 重置提取状态
+    paper.extraction_attempts = 0
+    paper.extracted_at = None
     db.flush()
 
     try:

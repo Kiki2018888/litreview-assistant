@@ -237,7 +237,7 @@ class PaperUploadResult(_ORMModel):
 class PaperUploadResponse(_ORMModel):
     """批量上传响应."""
 
-    results: list[PaperUploadResult]
+    uploaded: list[PaperUploadResult]
 
 
 class PaperParseResponse(_ORMModel):
@@ -266,6 +266,7 @@ class PaperStatsResponse(_ORMModel):
 
     total: int = 0
     pending: int = 0
+    extracting: int = 0
     completed: int = 0
     failed: int = 0
     extract_failed: int = 0
