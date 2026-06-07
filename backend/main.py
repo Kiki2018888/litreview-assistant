@@ -88,14 +88,25 @@ def health_check() -> dict:
 from backend.api.v1.literature_crud import router as literature_router
 from backend.api.v1.literature_chat import router as literature_chat_router
 from backend.api.v1.literature_extract import router as literature_extract_router
+from backend.api.v1.literature_translate import router as literature_translate_router
 from backend.api.v1.batch_extract import router as batch_extract_router
+from backend.api.v1.batches import router as batches_router
+from backend.api.v1.settings import router as settings_router
+from backend.api.v1.data import router as data_router
+from backend.api.v1.chat_sessions import router as chat_sessions_router
 
 # 固定路径路由器先注册：POST /chat 优先于 /{paper_id}
 app.include_router(literature_chat_router)
+app.include_router(literature_translate_router)
 app.include_router(literature_extract_router)
 app.include_router(literature_router)
-# /api/v1/batches 独立前缀，不冲突
+# /api/v1/batches — 批次管理 + 批量提取共享前缀
 app.include_router(batch_extract_router)
+app.include_router(batches_router)
+# 独立前缀路由
+app.include_router(settings_router)
+app.include_router(data_router)
+app.include_router(chat_sessions_router)
 
 
 # ---------------------------------------------------------------------------
