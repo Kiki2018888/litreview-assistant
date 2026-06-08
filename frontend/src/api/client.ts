@@ -7,7 +7,7 @@
 let _cachedApiBase: string | null = null
 let _apiBasePromise: Promise<string> | null = null
 
-async function resolveApiBase(): Promise<string> {
+export async function resolveApiBase(): Promise<string> {
   if (_cachedApiBase) return _cachedApiBase
   if (_apiBasePromise) return _apiBasePromise
 

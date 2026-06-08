@@ -54,6 +54,8 @@ interface LiteratureListProps {
   selectedIds?: string[]
   /** 选择变化回调，用于暴露给父组件（M11 跨文献问答接入） */
   onSelectionChange?: (ids: string[]) => void
+  /** 点击文献行回调（打开详情） */
+  onSelectPaper?: (paperId: string) => void
 }
 
 // ============================================================================
@@ -64,6 +66,7 @@ export default function LiteratureList({
   refreshKey = 0,
   selectedIds: externalSelectedIds,
   onSelectionChange,
+  onSelectPaper,
 }: LiteratureListProps) {
   // ── 数据状态 ──
   const [papers, setPapers] = useState<PaperListItem[]>([])
@@ -324,7 +327,7 @@ export default function LiteratureList({
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/50 text-left">
-                  <th className="w-10 px-3 py-2.5">
+                  <th className="w-10 px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                     <input
                       type="checkbox"
                       checked={papers.length > 0 && papers.every((p) => selectedSet.has(p.id))}
@@ -345,12 +348,13 @@ export default function LiteratureList({
                 {papers.map((paper) => (
                   <tr
                     key={paper.id}
+                    onClick={() => onSelectPaper?.(paper.id)}
                     className={cn(
-                      "border-b border-border transition-colors hover:bg-muted/30",
+                      "border-b border-border transition-colors hover:bg-muted/30 cursor-pointer",
                       selectedSet.has(paper.id) && "bg-primary/5"
                     )}
                   >
-                    <td className="px-3 py-2.5">
+                    <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={selectedSet.has(paper.id)}
