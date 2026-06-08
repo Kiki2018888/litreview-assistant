@@ -12,6 +12,7 @@
 |------|------|----------|----------|
 | 2026-06-04 | v0.1 | 框架初始化，仅列路径和状态 | 🔓 未锁定 |
 | 2026-06-08 | v1.0 | 锁定 10 个核心接口，填充完整 Schema | 🔒 已锁定 |
+| 2026-06-08 | v1.1 | 修正 SSE 事件类型（对齐后端实际实现）、Chat 请求体字段、Settings 响应字段 | 🔒 已锁定 |
 
 ---
 
@@ -239,30 +240,43 @@
 |------|------|------|----------|----------|
 | POST | `/{id}/extract` | ✅ 已验证 | 2026-06-08 | Postman + SSE |
 
-**SSE 流格式**：
+**请求**：无请求体（paper_id 在 URL 路径中）。
+
+**SSE 事件类型**（按顺序出现）：
+
+| 事件 type | 字段 | 出现条件 | 说明 |
+|-----------|------|----------|------|
+| `status` | status, attempt, max_retries | 始终 | 提取开始通知 |
+| `retry` | attempt, max_retries, delay | API 调用失败重试时 | 指数退避重试通知 |
+| `chunk` | content | API 调用成功 | Kimi JSON Mode 完整响应 |
+| `result` | paper_id, title, keywords | 提取成功 | 提取结果摘要 |
+| `error` | code, message, attempt? | 提取失败 / JSON 解析失败 | 错误信息（EXTRACT_FAILED / EXTRACT_JSON_PARSE_ERROR） |
+| `cancelled` | message | 客户端断开 | 客户端主动断开连接 |
+| `done` | (无额外字段) | 始终（终止事件） | SSE 流结束标记 |
+
+**SSE 流示例**（成功路径）：
 
 ```
-data: {"type": "extract_chunk", "chunk": "..."}
+data: {"type":"status","status":"extracting","attempt":1,"max_retries":2}
 
-data: {"type": "extract_done", "data": {...}}
+data: {"type":"chunk","content":"{\"background\":\"...\",\"methods\":\"...\"}"}
 
-data: {"type": "extract_error", "message": "..."}
+data: {"type":"result","paper_id":"uuid","title":"论文标题","keywords":["词1","词2"]}
+
+data: {"type":"done"}
 ```
 
-**extract_done 中 data 结构**（同 ExtractedDataResponse）：
+**SSE 流示例**（错误路径）：
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| id | string (UUID) | 提取记录 ID |
-| paper_id | string (UUID) | 关联文献 ID |
-| background | string \| null | 研究背景 |
-| methods | string \| null | 研究方法 |
-| key_results | string[] \| null | 关键结果列表 |
-| conclusion | string \| null | 结论 |
-| keywords | string[] \| null | 关键词列表 |
-| raw_json | object \| null | AI 原始 JSON 输出 |
-| translation | string \| null | 摘要翻译 |
-| extracted_at | string (datetime) \| null | 提取时间 |
+```
+data: {"type":"status","status":"extracting","attempt":1,"max_retries":2}
+
+data: {"type":"retry","attempt":1,"max_retries":2,"delay":3}
+
+data: {"type":"error","code":"EXTRACT_FAILED","message":"...","attempt":1}
+
+data: {"type":"done"}
+```
 
 ---
 
@@ -278,28 +292,39 @@ data: {"type": "extract_error", "message": "..."}
 
 ```json
 {
-  "paper_ids": ["uuid1", "uuid2"],
-  "message": "string",
-  "use_fulltext": true,
+  "question": "string",
+  "paper_ids": ["uuid1", "uuid2"] | null,
+  "batch_id": "string (UUID) | null",
   "session_id": "string (UUID) | null"
 }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| paper_ids | string[] (UUID) | ✅ | 参与问答的文献 ID 列表 |
-| message | string | ✅ | 用户问题 |
-| use_fulltext | boolean | ✅ | 是否使用全文（true=全文，false=摘要） |
-| session_id | string (UUID) \| null | ❌ | 续接已有会话，不传则新建 |
+| question | string | ✅ | 用户提问 |
+| paper_ids | string[] (UUID) | ❌ | 文献 ID 列表（与 batch_id 二选一） |
+| batch_id | string (UUID) | ❌ | 批次 ID（与 paper_ids 二选一） |
+| session_id | string (UUID) | ❌ | 续接已有会话，不传则新建 |
 
-**SSE 流格式**：
+**SSE 事件类型**：
+
+| 事件 type | 字段 | 说明 |
+|-----------|------|------|
+| `chunk` | content | AI 回复片段（流式） |
+| `result` | session_id, answer_length | 完成摘要 |
+| `error` | code, message | 错误信息 |
+| `done` | (无额外字段) | SSE 流结束标记 |
+
+**SSE 流示例**：
 
 ```
-data: {"type": "chunk", "content": "AI 回复片段..."}
+data: {"type":"chunk","content":"根据您提供的文献摘要..."}
 
-data: {"type": "done", "session_id": "uuid"}
+data: {"type":"chunk","content":"进一步分析表明..."}
 
-data: {"type": "error", "message": "错误描述"}
+data: {"type":"result","session_id":"uuid","answer_length":1234}
+
+data: {"type":"done"}
 ```
 
 ---
@@ -314,19 +339,19 @@ data: {"type": "error", "message": "错误描述"}
 
 ```json
 {
-  "message": "string",
-  "use_fulltext": true,
+  "question": "string",
+  "use_fulltext": false,
   "session_id": "string (UUID) | null"
 }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| message | string | ✅ | 用户问题 |
-| use_fulltext | boolean | ✅ | 是否使用全文 |
-| session_id | string (UUID) \| null | ❌ | 续接已有会话 |
+| question | string | ✅ | 用户提问 |
+| use_fulltext | boolean | ❌ | 是否使用全文（默认 false=使用摘要） |
+| session_id | string (UUID) | ❌ | 续接已有会话 |
 
-**SSE 流格式**：同上（chunk / done / error）
+**SSE 流格式**：同 `/chat`（chunk / result / error / done）
 
 ---
 
@@ -353,9 +378,13 @@ data: {"type": "error", "message": "错误描述"}
 ```
 data: {"type": "progress", "current": 3, "total": 50, "paper_id": "uuid", "status": "extracting", "title": "论文标题"}
 
+data: {"type": "progress", "current": 3, "total": 50, "paper_id": "uuid", "status": "completed", "title": "论文标题"}
+
+data: {"type": "progress", "current": 4, "total": 50, "paper_id": "uuid", "status": "failed", "title": "论文标题", "error": "错误信息"}
+
 data: {"type": "done", "success_count": 48, "fail_count": 2}
 
-data: {"type": "error", "message": "..."}
+data: {"type": "done", "success_count": 0, "fail_count": 0, "message": "没有待处理的文献"}
 ```
 
 | 事件类型 | 字段 | 说明 |
@@ -363,10 +392,12 @@ data: {"type": "error", "message": "..."}
 | progress | current | 当前处理的文献序号（1-based） |
 | progress | total | 总文献数 |
 | progress | paper_id | 当前文献 ID |
-| progress | status | 当前文献状态：extracting \| extract_failed \| completed |
+| progress | status | 当前文献状态：extracting / completed / failed |
 | progress | title | 文献标题 |
+| progress | error | 错误信息（仅 status=failed 时） |
 | done | success_count | 成功数量 |
 | done | fail_count | 失败数量 |
+| done | message | 可选消息（如"没有待处理的文献"） |
 
 ---
 
@@ -413,7 +444,9 @@ data: {"type": "error", "message": "..."}
 {
   "id": 1,
   "has_api_key": true,
+  "api_key_preview": "sk-****xxxx",
   "default_model": "kimi-latest | null",
+  "available_models": ["kimi-latest", "kimi-thinking"],
   "temperature": 0.7 | null,
   "max_tokens": 4096 | null,
   "theme": "light | null",
@@ -425,7 +458,9 @@ data: {"type": "error", "message": "..."}
 |------|------|------|
 | id | number | 设置记录 ID（单用户始终为 1） |
 | has_api_key | boolean | 是否已配置 API Key（不返回明文） |
+| api_key_preview | string | API Key 脱敏预览：sk-****xxxx |
 | default_model | string \| null | 默认模型 |
+| available_models | string[] | 可用模型列表（来自 config） |
 | temperature | number \| null | 温度参数 0-2 |
 | max_tokens | number \| null | 最大 token 数 |
 | theme | string \| null | 界面主题 |

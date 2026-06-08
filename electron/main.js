@@ -287,6 +287,7 @@ async function createMainWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    stopBackendProcess(); // 确保窗口关闭时停止后端（macOS 尤其重要）
   });
 }
 
@@ -297,6 +298,10 @@ app.whenReady().then(async () => {
 
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
+      // 仅后端已停止时重新启动
+      if (!backendProcess || backendProcess.killed) {
+        await bootstrapBackend();
+      }
       await createMainWindow();
     }
   });

@@ -172,7 +172,9 @@ export interface ChatSession {
 export interface Settings {
   id: number
   has_api_key: boolean
+  api_key_preview: string
   default_model: string | null
+  available_models: string[]
   temperature: number | null
   max_tokens: number | null
   theme: string | null
@@ -259,41 +261,85 @@ export interface SSEEvent {
   [key: string]: unknown
 }
 
+// ── 聊天 SSE ──
+
 /** 聊天 chunk 事件 */
 export interface ChatChunkEvent extends SSEEvent {
   type: 'chunk'
   content: string
 }
 
-/** 聊天 done 事件 */
-export interface ChatDoneEvent extends SSEEvent {
-  type: 'done'
-  session_id?: string
+/** 聊天 result 事件 */
+export interface ChatResultEvent extends SSEEvent {
+  type: 'result'
+  session_id: string
+  answer_length: number
 }
 
 /** 聊天 error 事件 */
 export interface ChatErrorEvent extends SSEEvent {
   type: 'error'
+  code: string
   message: string
 }
 
-/** 提取 chunk 事件 */
-export interface ExtractChunkEvent extends SSEEvent {
-  type: 'extract_chunk'
-  chunk: string
+/** 聊天 done 事件 */
+export interface ChatDoneEvent extends SSEEvent {
+  type: 'done'
 }
 
-/** 提取 done 事件 */
-export interface ExtractDoneEvent extends SSEEvent {
-  type: 'extract_done'
-  data: ExtractedData
+// ── 单篇提取 SSE ──
+
+/** 提取 status 事件 */
+export interface ExtractStatusEvent extends SSEEvent {
+  type: 'status'
+  status: 'extracting'
+  attempt: number
+  max_retries: number
+}
+
+/** 提取 chunk 事件（含完整 JSON 响应） */
+export interface ExtractChunkEvent extends SSEEvent {
+  type: 'chunk'
+  content: string
+}
+
+/** 提取 retry 事件 */
+export interface ExtractRetryEvent extends SSEEvent {
+  type: 'retry'
+  attempt: number
+  max_retries: number
+  delay: number
+}
+
+/** 提取 result 事件 */
+export interface ExtractResultEvent extends SSEEvent {
+  type: 'result'
+  paper_id: string
+  title: string
+  keywords: string[]
 }
 
 /** 提取 error 事件 */
 export interface ExtractErrorEvent extends SSEEvent {
-  type: 'extract_error'
+  type: 'error'
+  code: string
+  message: string
+  attempt?: number
+}
+
+/** 提取 cancelled 事件 */
+export interface ExtractCancelledEvent extends SSEEvent {
+  type: 'cancelled'
   message: string
 }
+
+/** 提取 done 事件 */
+export interface ExtractDoneEvent extends SSEEvent {
+  type: 'done'
+}
+
+// ── 批量提取 SSE ──
 
 /** 批量提取 progress 事件 */
 export interface BatchProgressEvent extends SSEEvent {
@@ -301,8 +347,9 @@ export interface BatchProgressEvent extends SSEEvent {
   current: number
   total: number
   paper_id: string
-  status: string
+  status: 'extracting' | 'completed' | 'failed'
   title: string
+  error?: string
 }
 
 /** 批量提取 done 事件 */
@@ -310,4 +357,29 @@ export interface BatchDoneEvent extends SSEEvent {
   type: 'done'
   success_count: number
   fail_count: number
+  message?: string
+}
+
+// ---------------------------------------------------------------------------
+// 请求体类型
+// ---------------------------------------------------------------------------
+
+/** 跨文献问答请求 */
+export interface ChatRequest {
+  question: string
+  paper_ids?: string[]
+  batch_id?: string
+  session_id?: string
+}
+
+/** 单篇精读问答请求 */
+export interface SingleChatRequest {
+  question: string
+  session_id?: string
+  use_fulltext?: boolean
+}
+
+/** 批量提取请求 */
+export interface BatchExtractRequest {
+  batch_id?: string | null
 }
