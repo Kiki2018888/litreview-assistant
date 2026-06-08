@@ -67,3 +67,18 @@ export async function apiDelete<T>(path: string): Promise<T> {
   if (!res.ok) throw new Error(`DELETE ${path} failed: ${res.status}`)
   return res.json()
 }
+
+/** 文件上传（multipart/form-data），不做 JSON 编码 */
+export async function apiUpload<T>(path: string, formData: FormData): Promise<T> {
+  const base = await resolveApiBase()
+  const res = await fetch(`${base}${path}`, {
+    method: 'POST',
+    body: formData,
+  })
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => null)
+    const detail = errBody?.detail ?? `Upload failed: ${res.status}`
+    throw new Error(detail)
+  }
+  return res.json()
+}
