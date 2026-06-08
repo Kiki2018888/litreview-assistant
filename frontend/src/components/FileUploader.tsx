@@ -1,5 +1,6 @@
-import { useState, useRef, useCallback } from "react"
+import { useState, useRef, useCallback, useEffect } from "react"
 import { Upload, X, FileText, Check, AlertCircle, Loader2 } from "lucide-react"
+import { toast } from "sonner"
 import { cn } from "../lib/utils"
 import { apiUpload } from "../api/client"
 import type { PaperUploadResponse, Batch } from "../types"
@@ -45,38 +46,62 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
   const [batchId, setBatchId] = useState<string>("")
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // AbortController ref：组件卸载时取消进行中的上传
+  const abortRef = useRef<AbortController | null>(null)
+
+  // 组件卸载清理
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort()
+    }
+  }, [])
+
   // ── 文件校验 ──
 
-  const validateFiles = useCallback((files: FileList | File[]): File[] => {
-    const errors: string[] = []
+  const validateFiles = useCallback((files: FileList | File[]): { valid: File[]; rejected: string[] } => {
+    const rejected: string[] = []
     const valid: File[] = []
 
-    if (items.length + files.length > MAX_FILES) {
-      errors.push(`单次最多上传 ${MAX_FILES} 个文件`)
+    const remaining = MAX_FILES - items.length
+    if (remaining <= 0) {
+      rejected.push(`队列已满（最多 ${MAX_FILES} 个），无法继续添加`)
+      return { valid, rejected }
     }
 
+    // 按目录顺序截断，确保不超过 MAX_FILES
+    let added = 0
     for (const f of files) {
       if (!f.name.toLowerCase().endsWith(".pdf")) {
-        errors.push(`"${f.name}" 不是 PDF 文件`)
+        rejected.push(`"${f.name}" 不是 PDF 文件`)
         continue
       }
       if (f.size > MAX_SIZE_BYTES) {
-        errors.push(`"${f.name}" 超过 ${MAX_SIZE_MB}MB 限制`)
+        rejected.push(`"${f.name}" 超过 ${MAX_SIZE_MB}MB 限制`)
+        continue
+      }
+      if (added >= remaining) {
+        rejected.push(`已达到上限 ${MAX_FILES} 个，"${f.name}" 未添加`)
         continue
       }
       valid.push(f)
+      added++
     }
 
-    if (errors.length > 0) {
-      alert(errors.join("\n"))
-    }
-    return valid
+    return { valid, rejected }
   }, [items.length])
 
   // ── 添加文件 ──
 
   const addFiles = useCallback((files: File[]) => {
-    const valid = validateFiles(files)
+    const { valid, rejected } = validateFiles(files)
+    // 单个 reject 用 toast；3+ 条合并为一条
+    if (rejected.length === 1) {
+      toast.error(rejected[0])
+    } else if (rejected.length > 1) {
+      toast.error(`${rejected.length} 个文件未能添加`, {
+        description: rejected.slice(0, 3).join("\n") + (rejected.length > 3 ? `\n等共 ${rejected.length} 条` : ""),
+      })
+    }
     if (valid.length === 0) return
     setItems((prev) => [
       ...prev,
@@ -128,13 +153,20 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
   const handleUpload = useCallback(async () => {
     if (items.length === 0 || uploading) return
 
+    // 创建新的 AbortController
+    abortRef.current = new AbortController()
+
     setUploading(true)
 
     // 串行上传，逐个更新进度
     const updated = [...items]
     let successCount = 0
+    const total = updated.length
 
     for (let i = 0; i < updated.length; i++) {
+      // 检查是否已取消
+      if (abortRef.current.signal.aborted) break
+
       if (updated[i].status === "done") continue
 
       updated[i] = { ...updated[i], status: "uploading" }
@@ -163,6 +195,9 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
           updated[i] = { ...updated[i], status: "error", error: "服务器返回空结果" }
         }
       } catch (err) {
+        // 如果是被取消的，直接退出
+        if (abortRef.current?.signal.aborted) break
+
         updated[i] = {
           ...updated[i],
           status: "error",
@@ -173,10 +208,18 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
     }
 
     setUploading(false)
+    abortRef.current = null
 
-    // 全部完成后回调
-    if (successCount > 0 && onUploadComplete) {
-      onUploadComplete()
+    // 完成后 Toast 汇总
+    if (successCount > 0) {
+      toast.success(`成功上传 ${successCount} 篇文献`)
+      onUploadComplete?.()
+    }
+    const failCount = updated.filter((i) => i.status === "error").length
+    if (failCount > 0) {
+      toast.error(`${failCount} 篇上传失败`, {
+        description: "请查看下方错误详情",
+      })
     }
   }, [items, uploading, batchId, onUploadComplete])
 
@@ -192,6 +235,12 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
   const doneCount = items.filter((i) => i.status === "done").length
   const errorCount = items.filter((i) => i.status === "error").length
   const progress = items.length > 0 ? Math.round(((doneCount + errorCount) / items.length) * 100) : 0
+  // 进度文案：显示当前正在上传第几个（解决进度条静止问题）
+  const uploadingIndex = items.findIndex((i) => i.status === "uploading")
+  const progressLabel =
+    uploadingIndex >= 0
+      ? `正在上传 ${uploadingIndex + 1}/${items.length}`
+      : `${progress}%`
 
   return (
     <div className="space-y-3">
@@ -251,7 +300,7 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted-foreground">
               {items.length} 个文件
-              {uploading && ` · 上传中 ${progress}%`}
+              {uploading && ` · ${progressLabel}`}
               {!uploading && doneCount > 0 && ` · 成功 ${doneCount}`}
               {!uploading && errorCount > 0 && ` · 失败 ${errorCount}`}
             </span>
@@ -310,7 +359,7 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
                   {(item.file.size / 1024 / 1024).toFixed(1)} MB
                 </span>
 
-                {/* 状态文字 */}
+                {/* 错误信息 */}
                 {item.status === "error" && (
                   <span className="shrink-0 text-xs text-destructive" title={item.error}>
                     {item.error}

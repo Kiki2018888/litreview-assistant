@@ -8,6 +8,8 @@ import {
   Loader2,
   FileSearch,
   ArrowUpDown,
+  MessageSquare,
+  X,
 } from "lucide-react"
 import { cn } from "../lib/utils"
 import { apiGet } from "../api/client"
@@ -48,13 +50,21 @@ const STATUS_FILTER_OPTIONS = [
 interface LiteratureListProps {
   /** 外部触发的刷新信号（递增触发 re-fetch） */
   refreshKey?: number
+  /** 受控模式：外部传入选中 ID 集合 */
+  selectedIds?: string[]
+  /** 选择变化回调，用于暴露给父组件（M11 跨文献问答接入） */
+  onSelectionChange?: (ids: string[]) => void
 }
 
 // ============================================================================
 // LiteratureList 组件
 // ============================================================================
 
-export default function LiteratureList({ refreshKey = 0 }: LiteratureListProps) {
+export default function LiteratureList({
+  refreshKey = 0,
+  selectedIds: externalSelectedIds,
+  onSelectionChange,
+}: LiteratureListProps) {
   // ── 数据状态 ──
   const [papers, setPapers] = useState<PaperListItem[]>([])
   const [total, setTotal] = useState(0)
@@ -71,7 +81,53 @@ export default function LiteratureList({ refreshKey = 0 }: LiteratureListProps) 
   const [pageSize] = useState(20)
 
   // ── 多选 ──
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // 受控模式：使用 externalSelectedIds；非受控：使用内部 state
+  const isControlled = externalSelectedIds !== undefined
+  const [internalSelectedIds, setInternalSelectedIds] = useState<Set<string>>(new Set())
+
+  // 统一的选中集合
+  const selectedSet = isControlled
+    ? new Set(externalSelectedIds)
+    : internalSelectedIds
+
+  // 通知父组件选择变化
+  const notifySelection = useCallback(
+    (ids: Set<string>) => {
+      onSelectionChange?.(Array.from(ids))
+    },
+    [onSelectionChange]
+  )
+
+  // 内部更新选中（非受控模式）
+  const updateSelection = useCallback(
+    (updater: (prev: Set<string>) => Set<string>) => {
+      if (isControlled) {
+        // 受控模式：通知父组件，由父组件更新 props
+        const current = new Set(externalSelectedIds)
+        const next = updater(current)
+        onSelectionChange?.(Array.from(next))
+      } else {
+        setInternalSelectedIds((prev) => {
+          const next = updater(prev)
+          setTimeout(() => notifySelection(next), 0)
+          return next
+        })
+      }
+    },
+    [isControlled, externalSelectedIds, onSelectionChange, notifySelection]
+  )
+
+  // ── 翻页时清空选择 ──
+
+  useEffect(() => {
+    if (isControlled) {
+      onSelectionChange?.([])
+    } else {
+      setInternalSelectedIds(new Set())
+      notifySelection(new Set())
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page])
 
   // ── 数据获取 ──
 
@@ -124,25 +180,34 @@ export default function LiteratureList({ refreshKey = 0 }: LiteratureListProps) 
 
   // ── 多选操作 ──
 
-  const toggleSelect = useCallback((id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) {
-        next.delete(id)
-      } else {
-        next.add(id)
-      }
-      return next
-    })
-  }, [])
+  const toggleSelect = useCallback(
+    (id: string) => {
+      updateSelection((prev) => {
+        const next = new Set(prev)
+        if (next.has(id)) { next.delete(id) } else { next.add(id) }
+        return next
+      })
+    },
+    [updateSelection]
+  )
 
   const toggleSelectAll = useCallback(() => {
-    if (selectedIds.size === papers.length && papers.length > 0) {
-      setSelectedIds(new Set())
+    const currentIds = papers.map((p) => p.id)
+    const allSelected = currentIds.every((id) => selectedSet.has(id))
+    if (allSelected && currentIds.length > 0) {
+      updateSelection((prev) => {
+        const next = new Set(prev)
+        currentIds.forEach((id) => next.delete(id))
+        return next
+      })
     } else {
-      setSelectedIds(new Set(papers.map((p) => p.id)))
+      updateSelection(() => new Set(currentIds))
     }
-  }, [papers, selectedIds.size])
+  }, [papers, selectedSet, updateSelection])
+
+  const clearSelection = useCallback(() => {
+    updateSelection(() => new Set())
+  }, [updateSelection])
 
   // ── 标题截断 ──
 
@@ -150,6 +215,9 @@ export default function LiteratureList({ refreshKey = 0 }: LiteratureListProps) 
     if (!title) return "（无标题）"
     return title.length > max ? title.slice(0, max) + "…" : title
   }
+
+  // 选中数
+  const selectedCount = selectedSet.size
 
   return (
     <div className="space-y-3">
@@ -202,10 +270,28 @@ export default function LiteratureList({ refreshKey = 0 }: LiteratureListProps) 
         <ArrowUpDown className="h-4 w-4 shrink-0 text-muted-foreground" />
       </div>
 
-      {/* ── 多选信息条 ── */}
-      {selectedIds.size > 0 && (
-        <div className="flex items-center gap-2 rounded-md bg-primary/10 px-3 py-1.5 text-sm text-primary">
-          已选中 {selectedIds.size} 篇文献
+      {/* ── 多选操作条 ── */}
+      {selectedCount > 0 && (
+        <div className="flex items-center gap-2 rounded-md bg-primary/10 px-3 py-1.5 text-sm">
+          <span className="text-primary">
+            已选中 {selectedCount} 篇文献
+          </span>
+          <button
+            onClick={clearSelection}
+            className="ml-1 rounded p-0.5 text-primary/60 hover:text-primary transition-colors"
+            title="清空选择"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+          {/* 跨文献问答入口（M11 接入，当前仅占位） */}
+          <button
+            disabled
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground opacity-50 cursor-not-allowed"
+            title="跨文献问答功能将在后续版本实现"
+          >
+            <MessageSquare className="h-3.5 w-3.5" />
+            跨文献问答
+          </button>
         </div>
       )}
 
@@ -241,8 +327,9 @@ export default function LiteratureList({ refreshKey = 0 }: LiteratureListProps) 
                   <th className="w-10 px-3 py-2.5">
                     <input
                       type="checkbox"
-                      checked={selectedIds.size === papers.length && papers.length > 0}
+                      checked={papers.length > 0 && papers.every((p) => selectedSet.has(p.id))}
                       onChange={toggleSelectAll}
+                      title="全选本页"
                       className="h-4 w-4 rounded border-input"
                     />
                   </th>
@@ -260,44 +347,33 @@ export default function LiteratureList({ refreshKey = 0 }: LiteratureListProps) 
                     key={paper.id}
                     className={cn(
                       "border-b border-border transition-colors hover:bg-muted/30",
-                      selectedIds.has(paper.id) && "bg-primary/5"
+                      selectedSet.has(paper.id) && "bg-primary/5"
                     )}
                   >
-                    {/* 复选框 */}
                     <td className="px-3 py-2.5">
                       <input
                         type="checkbox"
-                        checked={selectedIds.has(paper.id)}
+                        checked={selectedSet.has(paper.id)}
                         onChange={() => toggleSelect(paper.id)}
                         className="h-4 w-4 rounded border-input"
                       />
                     </td>
-
-                    {/* 标题 */}
                     <td className="max-w-[300px] px-3 py-2.5">
                       <span className="line-clamp-2 font-medium" title={paper.title ?? undefined}>
                         {truncateTitle(paper.title)}
                       </span>
                     </td>
-
-                    {/* 作者 */}
                     <td className="hidden px-3 py-2.5 text-muted-foreground md:table-cell">
                       {paper.authors && paper.authors.length > 0
                         ? paper.authors[0] + (paper.authors.length > 1 ? ` +${paper.authors.length - 1}` : "")
                         : "—"}
                     </td>
-
-                    {/* 年份 */}
                     <td className="hidden px-3 py-2.5 text-muted-foreground sm:table-cell">
                       {paper.year ?? "—"}
                     </td>
-
-                    {/* 期刊 */}
                     <td className="hidden max-w-[160px] px-3 py-2.5 text-muted-foreground lg:table-cell">
                       <span className="line-clamp-1">{paper.journal ?? "—"}</span>
                     </td>
-
-                    {/* 状态 Badge */}
                     <td className="px-3 py-2.5">
                       <span
                         className={cn(
@@ -308,8 +384,6 @@ export default function LiteratureList({ refreshKey = 0 }: LiteratureListProps) 
                         {STATUS_MAP[paper.status]?.label ?? paper.status}
                       </span>
                     </td>
-
-                    {/* 标签 */}
                     <td className="hidden px-3 py-2.5 xl:table-cell">
                       <div className="flex flex-wrap gap-1">
                         {paper.tags.length > 0 ? (
@@ -426,5 +500,4 @@ export default function LiteratureList({ refreshKey = 0 }: LiteratureListProps) 
   )
 }
 
-// 导出当前选中 ID 的 getter（通过 ref 模式，父组件可用）
 export type { LiteratureListProps }
