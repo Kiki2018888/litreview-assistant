@@ -1,0 +1,42 @@
+{
+  "name": "research-assistant",
+  "version": "1.0.0",
+  "description": "面向科研人员的本地 AI 文献精读与学术写作助手",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "electron:dev": "electron .",
+    "electron:build": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^35.1.5",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.researchassistant.app",
+    "productName": "ResearchAssistant",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/dist/**/*",
+      "backend/**/*",
+      "requirements.txt",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": ["nsis"]
+    },
+    "mac": {
+      "target": ["dmg"]
+    }
+  }
+}
