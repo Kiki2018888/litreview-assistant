@@ -11,6 +11,7 @@ import {
   AlertCircle,
   ChevronDown,
   ChevronUp,
+  MessageSquare,
 } from "lucide-react"
 import { toast } from "sonner"
 import { cn } from "../lib/utils"
@@ -55,13 +56,15 @@ interface LiteratureDetailProps {
   onClose: () => void
   /** 操作后刷新外部列表（如删除、提取完成） */
   onRefresh?: () => void
+  /** 打开精读对话面板 */
+  onOpenChat?: (paperId: string) => void
 }
 
 // ============================================================================
 // LiteratureDetail 组件
 // ============================================================================
 
-export default function LiteratureDetail({ paperId, onClose, onRefresh }: LiteratureDetailProps) {
+export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenChat }: LiteratureDetailProps) {
   // ── 数据状态 ──
   const [paper, setPaper] = useState<PaperDetail | null>(null)
   const [loading, setLoading] = useState(false)
@@ -431,6 +434,17 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh }: Litera
           >
             <Languages className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">{translating ? "翻译中…" : "翻译"}</span>
+          </button>
+
+          {/* 精读对话 */}
+          <button
+            onClick={() => paperId && onOpenChat?.(paperId)}
+            disabled={!paper}
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-primary hover:bg-primary/10 transition-colors disabled:opacity-40"
+            title="AI 精读对话"
+          >
+            <MessageSquare className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">精读</span>
           </button>
 
           {/* 删除 */}

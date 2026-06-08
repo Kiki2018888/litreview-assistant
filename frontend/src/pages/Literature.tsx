@@ -2,8 +2,22 @@ import { useState, useEffect, useCallback } from "react"
 import FileUploader from "../components/FileUploader"
 import LiteratureList from "../components/LiteratureList"
 import LiteratureDetail from "../components/LiteratureDetail"
+import ChatPanel from "../components/ChatPanel"
 import { apiGet } from "../api/client"
 import type { Batch, BatchListResponse } from "../types"
+
+// ============================================================================
+// Chat 模式
+// ============================================================================
+
+type ChatMode =
+  | { mode: "single"; paperId: string }
+  | { mode: "multi"; paperIds: string[] }
+  | null
+
+// ============================================================================
+// Literature 页面
+// ============================================================================
 
 export default function Literature() {
   const [refreshKey, setRefreshKey] = useState(0)
@@ -14,6 +28,9 @@ export default function Literature() {
 
   // 详情面板状态
   const [detailPaperId, setDetailPaperId] = useState<string | null>(null)
+
+  // ChatPanel 状态
+  const [chatMode, setChatMode] = useState<ChatMode>(null)
 
   // 加载批次列表（用于上传时选择）
   useEffect(() => {
@@ -38,15 +55,35 @@ export default function Literature() {
     setRefreshKey((k) => k + 1)
   }, [])
 
+  // 打开精读面板（从 LiteratureDetail 触发）
+  const handleOpenChat = useCallback((paperId: string) => {
+    setChatMode({ mode: "single", paperId })
+  }, [])
+
+  // 打开跨文献问答（从 LiteratureList 多选条触发）
+  const handleChatMulti = useCallback((paperIds: string[]) => {
+    if (paperIds.length === 0) return
+    setChatMode({ mode: "multi", paperIds })
+  }, [])
+
+  // 关闭 ChatPanel
+  const handleCloseChat = useCallback(() => {
+    setChatMode(null)
+  }, [])
+
   // 是否显示详情面板
-  const showDetail = detailPaperId !== null
+  const showDetail = detailPaperId !== null && chatMode === null
+  const showChat = chatMode !== null
 
   return (
     <div className="flex h-full">
       {/* ── 左侧：列表区 ── */}
       <div
         className="flex flex-col min-w-0 overflow-y-auto p-6"
-        style={{ width: showDetail ? "40%" : "100%", transition: "width 0.2s ease" }}
+        style={{
+          width: showDetail || showChat ? "40%" : "100%",
+          transition: "width 0.2s ease",
+        }}
       >
         {/* 上传区域 */}
         <FileUploader
@@ -62,11 +99,16 @@ export default function Literature() {
           refreshKey={refreshKey}
           selectedIds={selectedIds}
           onSelectionChange={setSelectedIds}
-          onSelectPaper={setDetailPaperId}
+          onSelectPaper={(id) => {
+            setDetailPaperId(id)
+            // 打开详情时关闭 chat
+            if (chatMode) setChatMode(null)
+          }}
+          onChatMulti={handleChatMulti}
         />
       </div>
 
-      {/* ── 右侧：详情面板（滑出） ── */}
+      {/* ── 右侧：详情面板 ── */}
       {showDetail && (
         <div
           className="border-l border-border bg-background overflow-hidden"
@@ -76,7 +118,30 @@ export default function Literature() {
             paperId={detailPaperId}
             onClose={handleCloseDetail}
             onRefresh={handleRefresh}
+            onOpenChat={handleOpenChat}
           />
+        </div>
+      )}
+
+      {/* ── 右侧：ChatPanel ── */}
+      {showChat && chatMode && (
+        <div
+          className="border-l border-border bg-background overflow-hidden"
+          style={{ width: "60%", transition: "width 0.2s ease" }}
+        >
+          {chatMode.mode === "single" ? (
+            <ChatPanel
+              mode="single"
+              paperId={chatMode.paperId}
+              onClose={handleCloseChat}
+            />
+          ) : (
+            <ChatPanel
+              mode="multi"
+              paperIds={chatMode.paperIds}
+              onClose={handleCloseChat}
+            />
+          )}
         </div>
       )}
     </div>

@@ -56,6 +56,8 @@ interface LiteratureListProps {
   onSelectionChange?: (ids: string[]) => void
   /** 点击文献行回调（打开详情） */
   onSelectPaper?: (paperId: string) => void
+  /** 跨文献问答回调（多选后触发） */
+  onChatMulti?: (paperIds: string[]) => void
 }
 
 // ============================================================================
@@ -67,6 +69,7 @@ export default function LiteratureList({
   selectedIds: externalSelectedIds,
   onSelectionChange,
   onSelectPaper,
+  onChatMulti,
 }: LiteratureListProps) {
   // ── 数据状态 ──
   const [papers, setPapers] = useState<PaperListItem[]>([])
@@ -286,11 +289,10 @@ export default function LiteratureList({
           >
             <X className="h-3.5 w-3.5" />
           </button>
-          {/* 跨文献问答入口（M11 接入，当前仅占位） */}
+          {/* 跨文献问答入口 */}
           <button
-            disabled
-            className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground opacity-50 cursor-not-allowed"
-            title="跨文献问答功能将在后续版本实现"
+            onClick={() => onChatMulti?.(Array.from(selectedSet))}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
           >
             <MessageSquare className="h-3.5 w-3.5" />
             跨文献问答
