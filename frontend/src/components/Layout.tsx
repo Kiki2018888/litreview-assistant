@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import { NavLink, Outlet, useLocation } from "react-router-dom"
+import type { LucideIcon } from "lucide-react"
 import { BookOpen, PenLine, Settings, Sun, Moon } from "lucide-react"
 import { cn } from "../lib/utils"
 
@@ -37,7 +38,7 @@ function useDarkMode(): [boolean, () => void] {
 interface NavItem {
   path: string
   label: string
-  icon: React.FC<{ className?: string }>
+  icon: LucideIcon
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -73,27 +74,24 @@ export default function Layout() {
 
         {/* 导航项 */}
         <nav className="flex-1 space-y-1 px-3 py-4">
-          {NAV_ITEMS.map((item) => {
-            const isActive =
-              item.path === "/"
-                ? location.pathname === "/"
-                : location.pathname.startsWith(item.path)
-            return (
-              <NavLink
-                key={item.path}
-                to={item.path}
-                className={cn(
+          {NAV_ITEMS.map((item) => (
+            <NavLink
+              key={item.path}
+              to={item.path}
+              end={item.path === "/"}
+              className={({ isActive }) =>
+                cn(
                   "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
                   isActive
                     ? "bg-sidebar-accent text-sidebar-accent-foreground"
                     : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                )}
-              >
-                <item.icon className="h-4 w-4" />
-                {item.label}
-              </NavLink>
-            )
-          })}
+                )
+              }
+            >
+              <item.icon className="h-4 w-4" />
+              {item.label}
+            </NavLink>
+          ))}
         </nav>
 
         {/* 底部：暗色模式切换 */}
