@@ -71,9 +71,24 @@ export default function Literature() {
     setChatMode(null)
   }, [])
 
-  // 是否显示详情面板
-  const showDetail = detailPaperId !== null && chatMode === null
-  const showChat = chatMode !== null
+  // ── 显示控制（问题3修复：精读时不隐藏 Detail） ──
+
+  // 是否仅显示 Detail（无 ChatPanel）
+  const showDetailOnly = detailPaperId !== null && chatMode === null
+
+  // 是否同时显示 Detail + ChatPanel（单篇精读且对应同一篇文献）
+  const showDetailWithChat =
+    detailPaperId !== null &&
+    chatMode?.mode === "single" &&
+    chatMode.paperId === detailPaperId
+
+  // 是否仅显示 ChatPanel（跨文献问答，或精读但未打开 Detail）
+  const showChatOnly =
+    chatMode !== null && !showDetailWithChat
+
+  // 左侧列表宽度
+  const leftWidth =
+    showDetailOnly || showDetailWithChat || showChatOnly ? "40%" : "100%"
 
   return (
     <div className="flex h-full">
@@ -81,7 +96,7 @@ export default function Literature() {
       <div
         className="flex flex-col min-w-0 overflow-y-auto p-6"
         style={{
-          width: showDetail || showChat ? "40%" : "100%",
+          width: leftWidth,
           transition: "width 0.2s ease",
         }}
       >
@@ -101,15 +116,15 @@ export default function Literature() {
           onSelectionChange={setSelectedIds}
           onSelectPaper={(id) => {
             setDetailPaperId(id)
-            // 打开详情时关闭 chat
-            if (chatMode) setChatMode(null)
+            // 如果正在跨文献问答，关闭 chat
+            if (chatMode?.mode === "multi") setChatMode(null)
           }}
           onChatMulti={handleChatMulti}
         />
       </div>
 
-      {/* ── 右侧：详情面板 ── */}
-      {showDetail && (
+      {/* ── 右侧：仅 Detail ── */}
+      {showDetailOnly && (
         <div
           className="border-l border-border bg-background overflow-hidden"
           style={{ width: "60%", transition: "width 0.2s ease" }}
@@ -123,8 +138,39 @@ export default function Literature() {
         </div>
       )}
 
-      {/* ── 右侧：ChatPanel ── */}
-      {showChat && chatMode && (
+      {/* ── 右侧：Detail + ChatPanel 上下分栏（精读模式） ── */}
+      {showDetailWithChat && chatMode && (
+        <div
+          className="flex flex-col border-l border-border bg-background overflow-hidden"
+          style={{ width: "60%", transition: "width 0.2s ease" }}
+        >
+          {/* 上半部分：Detail（含 PdfViewer） */}
+          <div className="flex-1 overflow-hidden" style={{ flexBasis: "50%" }}>
+            <LiteratureDetail
+              paperId={detailPaperId}
+              onClose={() => {
+                // 关闭 Detail 时也关闭精读 chat
+                setChatMode(null)
+                handleCloseDetail()
+              }}
+              onRefresh={handleRefresh}
+              onOpenChat={handleOpenChat}
+            />
+          </div>
+
+          {/* 下半部分：ChatPanel */}
+          <div className="flex-1 overflow-hidden border-t border-border">
+            <ChatPanel
+              mode="single"
+              paperId={chatMode.paperId}
+              onClose={handleCloseChat}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ── 右侧：仅 ChatPanel（跨文献问答 / 孤立精读） ── */}
+      {showChatOnly && chatMode && (
         <div
           className="border-l border-border bg-background overflow-hidden"
           style={{ width: "60%", transition: "width 0.2s ease" }}

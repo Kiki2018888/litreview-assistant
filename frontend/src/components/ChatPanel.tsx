@@ -70,6 +70,13 @@ export default function ChatPanel({
     }
   }, [messages])
 
+  // ── 组件卸载时取消 SSE（问题4修复） ──
+  useEffect(() => {
+    return () => {
+      abort()
+    }
+  }, [abort])
+
   // ── SSE 事件处理 ──
   const handleSSEEvent = useCallback(
     (event: SSEEvent) => {
@@ -152,6 +159,7 @@ export default function ChatPanel({
       return
     }
 
+    // 禁用自动重连：聊天流重复提交会产生重复问题
     start({
       url,
       method: "POST",
@@ -159,9 +167,9 @@ export default function ChatPanel({
       onEvent: handleSSEEvent,
       onError: handleSSEError,
       onDone: () => {
-        // 流结束，聚焦输入框
         inputRef.current?.focus()
       },
+      disableRetry: true,
     })
   }, [
     input,
@@ -214,8 +222,15 @@ export default function ChatPanel({
       onEvent: handleSSEEvent,
       onError: handleSSEError,
       onDone: () => inputRef.current?.focus(),
+      disableRetry: true,
     })
   }, [messages, sessionId, mode, paperId, paperIds, useFulltext, start, handleSSEEvent, handleSSEError])
+
+  // ── 关闭面板（先 abort 再 onClose） ──
+  const handleClose = useCallback(() => {
+    abort()
+    onClose()
+  }, [abort, onClose])
 
   // ── 键盘事件 ──
   const handleKeyDown = useCallback(
@@ -314,7 +329,7 @@ export default function ChatPanel({
         </div>
 
         <button
-          onClick={onClose}
+          onClick={handleClose}
           className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
         >
           <X className="h-4 w-4" />
@@ -361,7 +376,7 @@ export default function ChatPanel({
               disabled={streaming}
               className="w-full rounded-md border border-input bg-background px-3 py-2 pr-10 text-sm outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-1 focus:ring-ring disabled:opacity-50"
             />
-            {/* 重试按钮（最后一条是 AI 空消息时显示） */}
+            {/* 重试按钮（最后一条是用户消息时显示） */}
             {!streaming &&
               messages.length > 0 &&
               messages[messages.length - 1]?.role === "user" && (

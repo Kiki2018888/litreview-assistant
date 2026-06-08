@@ -1,34 +1,116 @@
-import { useState, useCallback, useRef } from "react"
-import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Maximize, AlertTriangle } from "lucide-react"
+import { useState, useCallback, useRef, useEffect } from "react"
+import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Maximize, AlertTriangle, Loader2 } from "lucide-react"
 import { cn } from "../lib/utils"
+import { resolveApiBase } from "../api/client"
 
 // ============================================================================
 // Props
 // ============================================================================
 
 interface PdfViewerProps {
-  /** PDF 文件的绝对路径（用于构造 file:// URL） */
+  /** PDF 文件的绝对路径（用于构造 file:// URL，作为 fallback） */
   filePath: string | null
   /** PDF 总页数 */
   pageCount?: number | null
+  /** 文献 ID，优先通过后端 API 获取 PDF 二进制（解决 Electron webSecurity 拦截 file:// 的问题） */
+  paperId?: string | null
 }
 
 // ============================================================================
 // PdfViewer 组件
 // ============================================================================
 
-export default function PdfViewer({ filePath, pageCount }: PdfViewerProps) {
+export default function PdfViewer({ filePath, pageCount, paperId }: PdfViewerProps) {
   const [zoom, setZoom] = useState(100)
   const [currentPage, setCurrentPage] = useState(1)
   const [iframeError, setIframeError] = useState(false)
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [loadingPdf, setLoadingPdf] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  const blobUrlRef = useRef<string | null>(null)
 
   const totalPages = pageCount && pageCount > 0 ? pageCount : 1
 
-  // 构造 PDF URL：Electron 使用 file:// 协议
-  const pdfUrl = filePath
-    ? `file:///${filePath.replace(/\\/g, "/")}`
-    : null
+  // ── 通过后端 API 获取 PDF 二进制，生成 blob URL ──
+  useEffect(() => {
+    let cancelled = false
+
+    const fetchPdf = async () => {
+      setLoadingPdf(true)
+      setIframeError(false)
+      setBlobUrl(null)
+
+      // 释放旧的 blob URL
+      if (blobUrlRef.current?.startsWith("blob:")) {
+        URL.revokeObjectURL(blobUrlRef.current)
+        blobUrlRef.current = null
+      }
+
+      try {
+        if (!paperId) {
+          // 无 paperId：回退到 file://（仅浏览器 dev 模式可能可用）
+          if (filePath) {
+            const url = `file:///${filePath.replace(/\\/g, "/")}`
+            blobUrlRef.current = url
+            if (!cancelled) setBlobUrl(url)
+          } else {
+            if (!cancelled) setIframeError(true)
+          }
+          return
+        }
+
+        const base = await resolveApiBase()
+        const res = await fetch(`${base}/literature/${paperId}/file`)
+
+        if (!res.ok) {
+          // HTTP 错误：回退 file://
+          if (filePath) {
+            const url = `file:///${filePath.replace(/\\/g, "/")}`
+            blobUrlRef.current = url
+            if (!cancelled) setBlobUrl(url)
+          } else {
+            if (!cancelled) setIframeError(true)
+          }
+          return
+        }
+
+        const blob = await res.blob()
+        if (cancelled) return
+
+        const url = URL.createObjectURL(blob)
+        blobUrlRef.current = url
+        setBlobUrl(url)
+      } catch {
+        // 网络错误 / AbortError：回退 file://
+        if (cancelled) return
+        if (filePath) {
+          const url = `file:///${filePath.replace(/\\/g, "/")}`
+          blobUrlRef.current = url
+          setBlobUrl(url)
+        } else {
+          setIframeError(true)
+        }
+      } finally {
+        if (!cancelled) setLoadingPdf(false)
+      }
+    }
+
+    fetchPdf()
+
+    return () => {
+      cancelled = true
+    }
+  }, [paperId, filePath])
+
+  // 组件卸载时释放 blob URL
+  useEffect(() => {
+    return () => {
+      if (blobUrlRef.current?.startsWith("blob:")) {
+        URL.revokeObjectURL(blobUrlRef.current)
+        blobUrlRef.current = null
+      }
+    }
+  }, [])
 
   // ── 缩放控制 ──
 
@@ -68,14 +150,12 @@ export default function PdfViewer({ filePath, pageCount }: PdfViewerProps) {
   )
 
   // ── iframe 加载错误处理 ──
-
   const handleIframeError = useCallback(() => {
     setIframeError(true)
   }, [])
 
   // ── 无文件路径 ──
-
-  if (!pdfUrl) {
+  if (!filePath && !paperId) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
         <AlertTriangle className="h-10 w-10 mb-3 opacity-40" />
@@ -84,6 +164,19 @@ export default function PdfViewer({ filePath, pageCount }: PdfViewerProps) {
       </div>
     )
   }
+
+  // ── 正在加载 PDF ──
+  if (loadingPdf) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+        <Loader2 className="h-8 w-8 mb-3 animate-spin opacity-40" />
+        <p className="text-sm">正在加载 PDF…</p>
+      </div>
+    )
+  }
+
+  // 最终使用的 PDF URL
+  const pdfUrl = blobUrl
 
   return (
     <div className="flex flex-col h-full">
@@ -170,13 +263,12 @@ export default function PdfViewer({ filePath, pageCount }: PdfViewerProps) {
 
       {/* ── PDF 预览区 ── */}
       <div className="flex-1 relative bg-[#525659] dark:bg-[#1e1e1e]">
-        {iframeError ? (
+        {iframeError || !pdfUrl ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
             <AlertTriangle className="h-10 w-10 mb-3 opacity-40" />
             <p className="text-sm">PDF 预览不可用</p>
             <p className="text-xs mt-1 opacity-60 max-w-[280px] text-center">
-              浏览器安全策略阻止了 file:// 协议加载。
-              请使用 Electron 应用查看 PDF。
+              无法加载 PDF 文件。请确保后端文件服务已启动。
             </p>
           </div>
         ) : (

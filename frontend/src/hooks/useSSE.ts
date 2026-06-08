@@ -23,8 +23,10 @@ export interface UseSSEOptions {
   onError?: (error: string) => void
   /** 流结束回调 */
   onDone?: () => void
-  /** 最大重试次数，默认 3 */
+  /** 最大重试次数，默认 3。设为 0 禁用重连。 */
   maxRetries?: number
+  /** 是否禁用自动重连（聊天流等不应重复提交同一问题的场景） */
+  disableRetry?: boolean
 }
 
 // ============================================================================
@@ -44,6 +46,29 @@ export function useSSE() {
     setIsLoading(false)
   }, [])
 
+  // ── 判断是否为网络断开类错误（允许重连） ──
+  const isNetworkError = (err: unknown): boolean => {
+    if (!(err instanceof Error)) return false
+    // TypeError：fetch 无法连接（DNS 失败、连接拒绝等）
+    if (err.name === "TypeError") return true
+    // Failed to fetch：浏览器/Electron 网络层错误
+    if (err.message.includes("Failed to fetch")) return true
+    // 其他网络层错误
+    if (
+      err.message.includes("NetworkError") ||
+      err.message.includes("network") ||
+      err.message.includes("connect")
+    )
+      return true
+    return false
+  }
+
+  // ── 判断是否为 HTTP 错误（不重连） ──
+  const isHttpError = (err: unknown): boolean => {
+    if (!(err instanceof Error)) return false
+    return /^HTTP \d{3}:/.test(err.message)
+  }
+
   // ── 核心：发起 SSE 请求 ──
   const start = useCallback(
     (options: UseSSEOptions) => {
@@ -55,6 +80,7 @@ export function useSSE() {
         onError,
         onDone,
         maxRetries = 3,
+        disableRetry = false,
       } = options
 
       // 禁止并发：先中止旧连接
@@ -85,6 +111,9 @@ export function useSSE() {
             const errText = await res.text().catch(() => "")
             throw new Error(`HTTP ${res.status}: ${errText || res.statusText}`)
           }
+
+          // 连接成功，重置重试计数
+          retryCountRef.current = 0
 
           const reader = res.body?.getReader()
           if (!reader) throw new Error("无法读取 SSE 流")
@@ -142,7 +171,21 @@ export function useSSE() {
 
           const msg = err instanceof Error ? err.message : "SSE 连接失败"
 
-          // 自动重连
+          // ── HTTP 错误（4xx/5xx）：不重连，直接报错 ──
+          if (isHttpError(err)) {
+            setIsLoading(false)
+            onError?.(msg)
+            return
+          }
+
+          // ── 禁用重连或不是网络错误：不重连 ──
+          if (disableRetry || !isNetworkError(err)) {
+            setIsLoading(false)
+            onError?.(msg)
+            return
+          }
+
+          // ── 网络错误：指数退避重连 ──
           if (retryCountRef.current < maxRetries) {
             retryCountRef.current += 1
             const delay = Math.pow(2, retryCountRef.current - 1) * 1000 // 1s, 2s, 4s

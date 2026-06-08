@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback } from "react"
 import {
   X,
   Loader2,
@@ -15,7 +15,8 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { cn } from "../lib/utils"
-import { apiGet, apiPost, apiPut, apiDelete, resolveApiBase } from "../api/client"
+import { apiGet, apiPost, apiPut, apiDelete } from "../api/client"
+import { useSSE, type SSEEvent } from "../hooks/useSSE"
 
 import PdfViewer from "./PdfViewer"
 import type { PaperDetail, PaperStatus, ExtractedData } from "../types"
@@ -30,21 +31,6 @@ const STATUS_MAP: Record<PaperStatus, { label: string; className: string }> = {
   completed: { label: "已完成", className: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400" },
   failed: { label: "失败", className: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400" },
   extract_failed: { label: "提取失败", className: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400" },
-}
-
-// SSE 提取事件类型
-interface ExtractEvent {
-  type: "status" | "chunk" | "retry" | "result" | "error" | "cancelled" | "done"
-  status?: string
-  attempt?: number
-  max_retries?: number
-  delay?: number
-  content?: string
-  paper_id?: string
-  title?: string
-  keywords?: string[]
-  code?: string
-  message?: string
 }
 
 // ============================================================================
@@ -72,15 +58,13 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
 
   // ── 操作状态 ──
   const [parsing, setParsing] = useState(false)
-  const [extracting, setExtracting] = useState(false)
   const [translating, setTranslating] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [translatingResult, setTranslatingResult] = useState<string | null>(null)
 
-  // ── 提取进度 ──
+  // ── 提取进度（问题5修复：使用 useSSE 管理） ──
+  const [extracting, setExtracting] = useState(false)
   const [extractProgress, setExtractProgress] = useState<string>("")
-  const [extractAttempt, setExtractAttempt] = useState(0)
-  const [extractMaxRetries, setExtractMaxRetries] = useState(0)
 
   // ── 标签编辑 ──
   const [editingTags, setEditingTags] = useState(false)
@@ -92,8 +76,8 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
     new Set(["summary", "metadata"])
   )
 
-  // AbortController for SSE
-  const extractAbortRef = useRef<AbortController | null>(null)
+  // ── useSSE for extraction（禁用重连，提取流不需要） ──
+  const { start: startExtract, abort: abortExtract, isLoading: extractingSSE } = useSSE()
 
   // ── 获取文献详情 ──
 
@@ -117,12 +101,12 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
   useEffect(() => {
     fetchDetail()
     return () => {
-      extractAbortRef.current?.abort()
+      // 组件卸载时取消提取 SSE
+      abortExtract()
     }
-  }, [fetchDetail])
+  }, [fetchDetail, abortExtract])
 
   // ── 操作：重新解析 ──
-
   const handleReparse = useCallback(async () => {
     if (!paperId || parsing) return
     setParsing(true)
@@ -138,101 +122,70 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
     }
   }, [paperId, parsing, fetchDetail, onRefresh])
 
-  // ── 操作：提取摘要（SSE） ──
-
-  const handleExtract = useCallback(async () => {
+  // ── 操作：提取摘要（使用 useSSE，禁用重连） ──
+  const handleExtract = useCallback(() => {
     if (!paperId || extracting) return
 
-    extractAbortRef.current?.abort()
-    extractAbortRef.current = new AbortController()
+    // 先中止旧的提取
+    abortExtract()
 
     setExtracting(true)
     setExtractProgress("正在连接…")
-    setExtractAttempt(0)
-    setExtractMaxRetries(0)
 
-    try {
-      const base = await resolveApiBase()
-      const res = await fetch(`${base}/literature/${paperId}/extract`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: extractAbortRef.current.signal,
-      })
-
-      if (!res.ok) {
-        throw new Error(`提取请求失败: ${res.status}`)
-      }
-
-      const reader = res.body?.getReader()
-      if (!reader) throw new Error("无法读取SSE流")
-
-      const decoder = new TextDecoder()
-      let buffer = ""
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split("\n")
-        buffer = lines.pop() ?? ""
-
-        for (const line of lines) {
-          const trimmed = line.trim()
-          if (!trimmed.startsWith("data: ")) continue
-
-          try {
-            const event: ExtractEvent = JSON.parse(trimmed.slice(6))
-            switch (event.type) {
-              case "status":
-                setExtractAttempt(event.attempt ?? 0)
-                setExtractMaxRetries(event.max_retries ?? 0)
-                setExtractProgress(`第 ${event.attempt}/${event.max_retries} 次尝试…`)
-                break
-              case "retry":
-                setExtractAttempt(event.attempt ?? 0)
-                setExtractProgress(
-                  `第 ${event.attempt} 次失败，${event.delay ?? 0}s 后重试…`
-                )
-                break
-              case "chunk":
-                setExtractProgress("解析 AI 响应…")
-                break
-              case "result":
-                setExtractProgress("提取完成 ✓")
-                toast.success(`提取成功：${event.title ?? paperId}`)
-                break
-              case "error":
-                setExtractProgress(`提取失败：${event.message ?? "未知错误"}`)
-                toast.error(event.message ?? "提取失败")
-                break
-              case "cancelled":
-                setExtractProgress("已取消")
-                break
-              case "done":
-                // 流结束，刷新详情
-                await fetchDetail()
-                onRefresh?.()
-                break
-            }
-          } catch {
-            // 忽略 JSON 解析错误
-          }
+    startExtract({
+      url: `/literature/${paperId}/extract`,
+      method: "POST",
+      disableRetry: true,   // 提取流不需要重连
+      maxRetries: 0,
+      onEvent: (event: SSEEvent) => {
+        switch (event.type) {
+          case "status":
+            // 问题6修复：status 只显示"正在提取…"
+            setExtractProgress("正在提取…")
+            break
+          case "retry":
+            // 问题6修复：retry 显示重试次数
+            setExtractProgress(
+              `第 ${event.attempt ?? "?"} 次重试，${event.delay ?? 0}s 后…`
+            )
+            break
+          case "chunk":
+            setExtractProgress("解析 AI 响应…")
+            break
+          case "result":
+            setExtractProgress("提取完成 ✓")
+            toast.success(`提取成功：${(event.title as string) ?? paperId}`)
+            break
+          case "error":
+            setExtractProgress(`提取失败：${(event.message as string) ?? "未知错误"}`)
+            toast.error((event.message as string) ?? "提取失败")
+            break
+          case "cancelled":
+            setExtractProgress("已取消")
+            break
+          case "done":
+            // 流结束，刷新详情
+            fetchDetail()
+            onRefresh?.()
+            break
         }
-      }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        setExtractProgress("已取消")
-      } else {
-        const msg = err instanceof Error ? err.message : "提取失败"
+      },
+      onError: (msg: string) => {
         setExtractProgress(msg)
         toast.error(msg)
-      }
-    } finally {
+      },
+      onDone: () => {
+        setExtracting(false)
+      },
+    })
+  }, [paperId, extracting, abortExtract, startExtract, fetchDetail, onRefresh])
+
+  // 同步 extracting 状态（对接 useSSE 的 isLoading）
+  useEffect(() => {
+    if (!extractingSSE && extracting) {
       setExtracting(false)
-      extractAbortRef.current = null
     }
-  }, [paperId, extracting, fetchDetail, onRefresh])
+  }, [extractingSSE, extracting])
 
   // ── 操作：翻译摘要 ──
 
@@ -500,9 +453,13 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
       {/* ── 主内容区 ── */}
       {paper && !loading && (
         <div className="flex-1 flex overflow-hidden">
-          {/* 左侧：PDF 预览 */}
+          {/* 左侧：PDF 预览（问题5：传递 paperId 给 PdfViewer） */}
           <div className="w-[60%] min-w-0 border-r border-border">
-            <PdfViewer filePath={paper.file_path} pageCount={paper.page_count} />
+            <PdfViewer
+              filePath={paper.file_path}
+              pageCount={paper.page_count}
+              paperId={paper.id}
+            />
           </div>
 
           {/* 右侧：信息面板 */}
