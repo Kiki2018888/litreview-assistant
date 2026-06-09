@@ -33,19 +33,25 @@ hidden_imports = [
     'uvicorn.lifespan.on', 'uvicorn.lifespan.off',
     # SQLAlchemy
     'sqlalchemy.ext.baked', 'sqlalchemy.sql.default_comparator',
-    # pymupdf
-    'fitz', 'pymupdf',
-    # cryptography
+    # multipart 上传（POST /upload 依赖；pip 包名 python-multipart，模块名 multipart）
+    'multipart',
+    'starlette.formparsers', 'starlette.requests',
+    # pymupdf / pdfplumber
+    'fitz', 'pymupdf', 'pdfplumber', 'pdfplumber._typing',
+    # PIL（pdfplumber 图像处理）
+    'PIL', 'PIL._imaging',
+    # cryptography / keyring
     'cryptography', 'cryptography.hazmat.backends',
-    # keyring
     'keyring', 'keyring.backends', 'keyring.backends.Windows',
+    'keyring.backends.chainer',
     # pydantic
     'pydantic', 'pydantic.deprecated.decorator',
-    # pdfplumber
-    'pdfplumber', 'pdfplumber._typing',
+    # Alembic 迁移
+    'alembic.runtime.migration', 'alembic.command', 'alembic.config',
+    # Kimi API
+    'openai', 'httpx',
     # 其他
-    'httpx', 'python_multipart', 'aiofiles',
-    'email_validator', 'jose', 'pypdfium2', 'PIL',
+    'aiofiles', 'email_validator', 'jose', 'pypdfium2',
 ]
 
 # ---------------------------------------------------------------------------

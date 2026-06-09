@@ -84,10 +84,11 @@ def _run_migrations() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期：启动时确保目录/表存在，关闭时清理资源."""
-    # 启动：确保 data/ 目录存在
+    # 启动：确保 data/ 与 logs/ 目录存在
     from backend.config import DATA_DIR, PDF_DIR
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PDF_DIR.mkdir(parents=True, exist_ok=True)
+    (DATA_DIR / "logs").mkdir(parents=True, exist_ok=True)
     logger.info("ResearchAssistant v%s 启动，数据目录 %s", VERSION, DATA_DIR)
 
     # 首次运行自动建表
@@ -177,10 +178,16 @@ app.include_router(paper_router, prefix="/api/v1")
 if __name__ == "__main__":
     import uvicorn
 
+    from backend.config import DATA_DIR
+
+    (DATA_DIR / "logs").mkdir(parents=True, exist_ok=True)
+
     frozen = getattr(sys, "frozen", False)
     uvicorn.run(
         app if frozen else "backend.main:app",
         host=settings.host,
         port=settings.port,
         reload=settings.debug and not frozen,
+        log_config=None,  # PyInstaller console=False 时 sys.stderr 为 None，禁用 ColoredFormatter
+        access_log=False,
     )

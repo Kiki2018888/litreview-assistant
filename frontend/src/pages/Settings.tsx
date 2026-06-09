@@ -258,7 +258,7 @@ export default function SettingsPage() {
   const handleTestConnection = useCallback(async () => {
     setTestStatus("testing")
     try {
-      const res = await apiPost<{ valid: boolean; message: string }>("/settings/test")
+      const res = await apiPost<{ valid: boolean; message: string }>("/settings/test", {})
       if (res.valid) {
         if (isMounted.current) setTestStatus("connected")
         toast.success(res.message || "连接成功")

@@ -32,6 +32,30 @@ let backendPort = DEFAULT_PORT;
 let mainWindow = null;
 /** @type {string[]} */
 const tempFiles = [];
+/** @type {import('fs').WriteStream | null} */
+let backendLogStream = null;
+
+/**
+ * 后端日志文件路径（%APPDATA%/ResearchAssistant/logs/backend.log）
+ * @returns {string}
+ */
+function getBackendLogPath() {
+  return path.join(app.getPath('userData'), 'logs', 'backend.log');
+}
+
+/**
+ * 确保后端日志目录存在并返回追加写入流
+ * @returns {import('fs').WriteStream}
+ */
+function ensureBackendLogStream() {
+  const logPath = getBackendLogPath();
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  if (!backendLogStream || backendLogStream.destroyed) {
+    backendLogStream = fs.createWriteStream(logPath, { flags: 'a' });
+    backendLogStream.write(`\n--- backend started ${new Date().toISOString()} ---\n`);
+  }
+  return backendLogStream;
+}
 
 // ---------------------------------------------------------------------------
 // 自动更新（electron-updater）
@@ -211,6 +235,7 @@ function startBackendProcess(port) {
     PYTHONUNBUFFERED: '1',
     RA_PORT: String(port),
   };
+  const logStream = ensureBackendLogStream();
 
   if (isDev) {
     // 开发模式：通过 Python + uvicorn 启动
@@ -238,8 +263,9 @@ function startBackendProcess(port) {
       throw new Error(`后端可执行文件未找到: ${exePath}`);
     }
 
+    // cwd 设为用户数据目录，避免 Program Files 无写入权限
     backendProcess = spawn(exePath, [], {
-      cwd: path.dirname(exePath),
+      cwd: app.getPath('userData'),
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -247,11 +273,13 @@ function startBackendProcess(port) {
   }
 
   backendProcess.stdout?.on('data', (chunk) => {
-    process.stdout.write(`[backend] ${chunk}`);
+    logStream.write(chunk);
+    if (isDev) process.stdout.write(`[backend] ${chunk}`);
   });
 
   backendProcess.stderr?.on('data', (chunk) => {
-    process.stderr.write(`[backend] ${chunk}`);
+    logStream.write(chunk);
+    if (isDev) process.stderr.write(`[backend] ${chunk}`);
   });
 
   backendProcess.on('exit', (code, signal) => {
