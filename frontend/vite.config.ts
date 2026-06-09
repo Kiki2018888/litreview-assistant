@@ -5,6 +5,7 @@ import path from 'path'
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: './',  // 关键：相对路径，兼容 Electron file:// 加载
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

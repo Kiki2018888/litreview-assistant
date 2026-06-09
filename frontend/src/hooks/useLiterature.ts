@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
-import { apiGet, apiPost, apiPut, apiDelete } from '@/api/client'
-import type { Paper, PaperListResponse, Batch } from '@/types'
+import { apiGet } from '@/api/client'
+import type { Paper, PaperListResponse } from '@/types'
 
 export function useLiterature() {
   const [papers, setPapers] = useState<Paper[]>([])
@@ -10,7 +10,7 @@ export function useLiterature() {
     setLoading(true)
     const query = params ? '?' + new URLSearchParams(params).toString() : ''
     const data = await apiGet<PaperListResponse>(`/literature/${query}`)
-    setPapers(data.items)
+    setPapers(data.items as unknown as Paper[])
     setLoading(false)
   }, [])
 

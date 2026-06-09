@@ -161,7 +161,6 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
     // 串行上传，逐个更新进度
     const updated = [...items]
     let successCount = 0
-    const total = updated.length
 
     for (let i = 0; i < updated.length; i++) {
       // 检查是否已取消

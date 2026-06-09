@@ -64,15 +64,21 @@ def _run_migrations() -> None:
             alembic_cfg.set_main_option("script_location", str(alembic_scripts))
 
         command.upgrade(alembic_cfg, "head")
-        logger.info("数据库迁移完成")
+        logger.info("数据库迁移完成（Alembic）")
     except Exception:
-        logger.exception("数据库迁移失败，尝试 fallback")
+        logger.exception("Alembic 迁移失败，尝试 fallback（create_all + FTS5）")
         try:
             from backend.services.db import init_db
             init_db()
             logger.info("已通过 create_all 创建数据表（fallback）")
+
+            # 补齐 FTS5 虚拟表与触发器（init_db 不创建 FTS5）
+            from backend.api.v1.data import _init_fts5
+            _init_fts5()
+            logger.info("FTS5 虚拟表和触发器已创建（fallback）")
         except Exception:
-            logger.exception("数据库初始化完全失败")
+            logger.exception("数据库初始化完全失败，终止启动")
+            sys.exit(1)
 
 
 @asynccontextmanager

@@ -6,10 +6,9 @@
     pyinstaller backend.spec --distpath ../dist --workpath ../dist/build-backend
 
 输出结构：
-    ../dist/backend.exe       (EXE step 输出，薄启动器)
     ../dist/backend/          (COLLECT 输出，完整应用目录)
-      backend.exe             (主可执行文件)
-      _internal/              (Python 运行时与依赖)
+      backend.exe             (薄启动器 + PYZ)
+      _internal/              (Python 运行时与所有依赖)
       alembic/                (数据库迁移脚本)
       alembic.ini             (Alembic 配置)
 """
@@ -84,9 +83,7 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
-    [],
+    exclude_binaries=True,  # 关键：排除二进制文件，标准 onedir 写法
     name='backend',
     debug=False,
     bootloader_ignore_signals=False,

@@ -12,11 +12,12 @@ export async function resolveApiBase(): Promise<string> {
   if (_apiBasePromise) return _apiBasePromise
 
   if (typeof window !== 'undefined' && (window as any).electron?.getBackendPort) {
-    _apiBasePromise = (window as any).electron.getBackendPort().then((port: number) => {
+    const p = (window as any).electron.getBackendPort().then((port: number) => {
       _cachedApiBase = `http://127.0.0.1:${port}/api/v1`
       return _cachedApiBase
     })
-    return _apiBasePromise
+    _apiBasePromise = p
+    return p
   }
 
   _cachedApiBase = '/api/v1'

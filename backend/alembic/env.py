@@ -11,7 +11,7 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 
 # 导入项目配置和元数据
-from backend.services.db import DATABASE_URL
+from backend.config import DATABASE_URL
 from backend.models.tables import Base
 
 

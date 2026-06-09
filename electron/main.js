@@ -362,7 +362,9 @@ async function bootstrapBackend() {
 
   const ready = await waitForBackendReady(backendPort);
   if (!ready) {
-    const message = '后端在 15 秒内未能就绪，请检查 Python 环境与依赖是否已安装。';
+    const message = isDev
+      ? '后端在 15 秒内未能就绪，请检查 Python 环境与依赖是否已安装。'
+      : '后端启动失败，请重新安装应用';
     notifyBackendError(message);
     throw new Error(message);
   }
