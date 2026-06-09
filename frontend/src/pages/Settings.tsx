@@ -55,8 +55,10 @@ export default function SettingsPage() {
     null | "testing" | "connected" | "failed"
   >(null)
   const [dbStats, setDbStats] = useState<{
-    db_size: string
-    table_counts: Record<string, number>
+    db_file_size_mb: number
+    tables: Record<string, number>
+    pdf_count: number
+    checked_at: string
   } | null>(null)
 
   // ── 对话框状态 ──
@@ -90,8 +92,10 @@ export default function SettingsPage() {
   const loadDbStats = useCallback(async () => {
     try {
       const data = await apiGet<{
-        db_size: string
-        table_counts: Record<string, number>
+        db_file_size_mb: number
+        tables: Record<string, number>
+        pdf_count: number
+        checked_at: string
       }>("/data/db-stats")
       if (isMounted.current) setDbStats(data)
     } catch {
@@ -188,8 +192,23 @@ export default function SettingsPage() {
   const handleExport = useCallback(async () => {
     try {
       const base = await import("../api/client").then((m) => m.resolveApiBase())
-      window.open(`${base}/data/export-db`, "_blank")
-      toast.success("正在导出数据库…")
+      const response = await fetch(`${base}/data/export-db`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      })
+      if (!response.ok) {
+        toast.error("导出失败")
+        return
+      }
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = "research-assistant.db"
+      a.click()
+      window.URL.revokeObjectURL(url)
+      toast.success("数据库导出成功")
     } catch {
       toast.error("导出失败")
     }
@@ -367,10 +386,10 @@ export default function SettingsPage() {
             <div className="flex items-center gap-4 text-sm">
               <span className="text-muted-foreground">数据库大小</span>
               <span className="font-mono font-medium">
-                {dbStats.db_size}
+                {dbStats.db_file_size_mb} MB
               </span>
               <span className="text-muted-foreground">
-                {Object.values(dbStats.table_counts).reduce(
+                {Object.values(dbStats.tables).reduce(
                   (a, b) => a + b,
                   0
                 )}{" "}

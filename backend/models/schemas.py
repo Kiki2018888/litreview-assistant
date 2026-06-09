@@ -150,6 +150,16 @@ class PaperBlockResponse(PaperBlockBase):
     updated_at: datetime
 
 
+class PaperBlocksResponse(_ORMModel):
+    """论文撰写全部分块响应（block_name → PaperBlockResponse | None）."""
+
+    abstract: Optional[PaperBlockResponse] = None
+    introduction: Optional[PaperBlockResponse] = None
+    methods: Optional[PaperBlockResponse] = None
+    results: Optional[PaperBlockResponse] = None
+    discussion: Optional[PaperBlockResponse] = None
+
+
 # ---------------------------------------------------------------------------
 # 5. batches
 # ---------------------------------------------------------------------------
@@ -407,6 +417,7 @@ __all__ = [
     "PaperBlockCreate",
     "PaperBlockUpdate",
     "PaperBlockResponse",
+    "PaperBlocksResponse",
     # 5. batches
     "BatchBase",
     "BatchCreate",

@@ -94,6 +94,7 @@ from backend.api.v1.batches import router as batches_router
 from backend.api.v1.settings import router as settings_router
 from backend.api.v1.data import router as data_router
 from backend.api.v1.chat_sessions import router as chat_sessions_router
+from backend.api.v1.paper import router as paper_router
 
 # 固定路径路由器先注册：POST /chat 优先于 /{paper_id}
 app.include_router(literature_chat_router)
@@ -107,6 +108,7 @@ app.include_router(batches_router)
 app.include_router(settings_router)
 app.include_router(data_router)
 app.include_router(chat_sessions_router)
+app.include_router(paper_router, prefix="/api/v1")
 
 
 # ---------------------------------------------------------------------------

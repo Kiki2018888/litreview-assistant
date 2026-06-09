@@ -74,7 +74,7 @@ export default function ChatHistory() {
     try {
       setLoading(true)
       const params = new URLSearchParams()
-      if (filterType) params.set("type", filterType)
+      if (filterType) params.set("session_type", filterType)
       params.set("page", page.toString())
       params.set("page_size", pageSize.toString())
       const data = await apiGet<ChatSessionListResponse>(
