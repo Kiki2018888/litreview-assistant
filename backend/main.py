@@ -2,10 +2,12 @@
 
 FastAPI 应用启动、CORS、生命周期管理、路由注册。
 """
-from __future__ import annotations
 
 import logging
+import os
+import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +31,50 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# 数据库迁移（首次运行自动建表）
+# ---------------------------------------------------------------------------
+
+
+def _get_alembic_cfg_path() -> Path:
+    """定位 alembic.ini：生产模式在 sys._MEIPASS，开发模式在 backend/ 目录."""
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS)  # type: ignore[attr-defined]
+    else:
+        base = Path(__file__).resolve().parent  # backend/
+    return base / "alembic.ini"
+
+
+def _run_migrations() -> None:
+    """执行 Alembic 迁移，确保数据库结构为最新版本."""
+    try:
+        from alembic import command
+        from alembic.config import Config
+
+        ini_path = _get_alembic_cfg_path()
+        if not ini_path.exists():
+            logger.warning("alembic.ini 未找到，跳过数据库迁移")
+            return
+
+        alembic_cfg = Config(str(ini_path))
+
+        # 生产模式下 script_location 指向 _MEIPASS/alembic/
+        if getattr(sys, "frozen", False):
+            alembic_scripts = Path(sys._MEIPASS) / "alembic"  # type: ignore[attr-defined]
+            alembic_cfg.set_main_option("script_location", str(alembic_scripts))
+
+        command.upgrade(alembic_cfg, "head")
+        logger.info("数据库迁移完成")
+    except Exception:
+        logger.exception("数据库迁移失败，尝试 fallback")
+        try:
+            from backend.services.db import init_db
+            init_db()
+            logger.info("已通过 create_all 创建数据表（fallback）")
+        except Exception:
+            logger.exception("数据库初始化完全失败")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期：启动时确保目录/表存在，关闭时清理资源."""
@@ -37,6 +83,10 @@ async def lifespan(app: FastAPI):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PDF_DIR.mkdir(parents=True, exist_ok=True)
     logger.info("ResearchAssistant v%s 启动，数据目录 %s", VERSION, DATA_DIR)
+
+    # 首次运行自动建表
+    _run_migrations()
+
     yield
     # 关闭：无额外清理
     logger.info("ResearchAssistant 关闭")
@@ -62,7 +112,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["app://."],
+    allow_origins=[
+        "app://.",           # Electron 开发模式
+        "null",              # file:// 协议首页 Origin
+    ],
     allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
@@ -117,9 +170,11 @@ app.include_router(paper_router, prefix="/api/v1")
 
 if __name__ == "__main__":
     import uvicorn
+
+    frozen = getattr(sys, "frozen", False)
     uvicorn.run(
-        "backend.main:app",
+        app if frozen else "backend.main:app",
         host=settings.host,
         port=settings.port,
-        reload=settings.debug,
+        reload=settings.debug and not frozen,
     )

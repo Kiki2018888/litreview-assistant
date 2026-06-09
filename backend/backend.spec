@@ -1,0 +1,117 @@
+# -*- mode: python ; coding: utf-8 -*-
+"""PyInstaller spec — 将 Python 后端打包为 onedir 可执行文件.
+
+用法：
+    cd backend
+    pyinstaller backend.spec --distpath ../dist --workpath ../dist/build-backend
+
+输出结构：
+    ../dist/backend.exe       (EXE step 输出，薄启动器)
+    ../dist/backend/          (COLLECT 输出，完整应用目录)
+      backend.exe             (主可执行文件)
+      _internal/              (Python 运行时与依赖)
+      alembic/                (数据库迁移脚本)
+      alembic.ini             (Alembic 配置)
+"""
+
+import os
+import sys
+
+# ---------------------------------------------------------------------------
+# 将项目根目录加入 sys.path，确保 "from backend.xxx import yyy" 可解析
+# ---------------------------------------------------------------------------
+_project_root = os.path.dirname(SPECPATH)  # backend/ → 项目根
+sys.path.insert(0, _project_root)
+
+# ---------------------------------------------------------------------------
+# 隐藏导入
+# ---------------------------------------------------------------------------
+hidden_imports = [
+    # uvicorn
+    'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.loops.asyncio',
+    'uvicorn.protocols.http.auto', 'uvicorn.protocols.http.httptools_impl',
+    'uvicorn.protocols.websockets.auto',
+    'uvicorn.lifespan.on', 'uvicorn.lifespan.off',
+    # SQLAlchemy
+    'sqlalchemy.ext.baked', 'sqlalchemy.sql.default_comparator',
+    # pymupdf
+    'fitz', 'pymupdf',
+    # cryptography
+    'cryptography', 'cryptography.hazmat.backends',
+    # keyring
+    'keyring', 'keyring.backends', 'keyring.backends.Windows',
+    # pydantic
+    'pydantic', 'pydantic.deprecated.decorator',
+    # pdfplumber
+    'pdfplumber', 'pdfplumber._typing',
+    # 其他
+    'httpx', 'python_multipart', 'aiofiles',
+    'email_validator', 'jose', 'pypdfium2', 'PIL',
+]
+
+# ---------------------------------------------------------------------------
+# 数据文件
+# ---------------------------------------------------------------------------
+datas = [
+    ('alembic', 'alembic'),
+    ('alembic.ini', '.'),
+]
+
+# ---------------------------------------------------------------------------
+# Analysis
+# ---------------------------------------------------------------------------
+a = Analysis(
+    ['main.py'],
+    pathex=['..', '.'],
+    binaries=[],
+    datas=datas,
+    hiddenimports=hidden_imports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[
+        'tkinter', 'matplotlib', 'numpy', 'scipy',
+        'pandas', 'PIL.ImageQt', 'IPython',
+    ],
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure)
+
+# ---------------------------------------------------------------------------
+# EXE（COLLECT 的前置步骤）
+# ---------------------------------------------------------------------------
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.datas,
+    [],
+    name='backend',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=None,
+)
+
+# ---------------------------------------------------------------------------
+# COLLECT（--onedir 模式，生成完整应用目录）
+# ---------------------------------------------------------------------------
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='backend',
+)

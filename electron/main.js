@@ -1,7 +1,9 @@
 /**
  * ResearchAssistant Electron 主进程
  *
- * 启动 Python 后端 → 健康检查 → 加载前端
+ * 开发模式：spawn python -m uvicorn → 加载 http://localhost:5173
+ * 生产模式：spawn 嵌入的 backend.exe → 加载 frontend/dist/index.html
+ *
  * 关闭时终止后端进程，避免孤儿 Python 进程。
  */
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
@@ -91,33 +93,61 @@ async function waitForBackendReady(port) {
 }
 
 /**
- * 启动 Python 后端（工作目录：项目根目录）
+ * 返回生产模式下嵌入的 backend.exe 路径
+ */
+function getBackendExePath() {
+  const exeName = process.platform === 'win32' ? 'backend.exe' : 'backend';
+  return path.join(process.resourcesPath, 'backend', exeName);
+}
+
+/**
+ * 启动后端进程
+ *
+ * 开发模式：spawn python -m uvicorn backend.main:app
+ * 生产模式：spawn 嵌入的 backend.exe（PyInstaller 打包）
+ *
  * @param {number} port
  */
 function startBackendProcess(port) {
-  const args = [
-    '-m',
-    'uvicorn',
-    'backend.main:app',
-    '--host',
-    '127.0.0.1',
-    '--port',
-    String(port),
-  ];
-
   const env = {
     ...process.env,
     PYTHONUNBUFFERED: '1',
-    PYTHONPATH: PROJECT_ROOT,
     RA_PORT: String(port),
   };
 
-  backendProcess = spawn(PYTHON, args, {
-    cwd: PROJECT_ROOT,
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
+  if (isDev) {
+    // 开发模式：通过 Python + uvicorn 启动
+    const args = [
+      '-m',
+      'uvicorn',
+      'backend.main:app',
+      '--host',
+      '127.0.0.1',
+      '--port',
+      String(port),
+    ];
+    env.PYTHONPATH = PROJECT_ROOT;
+
+    backendProcess = spawn(PYTHON, args, {
+      cwd: PROJECT_ROOT,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  } else {
+    // 生产模式：启动嵌入的 PyInstaller 打包后端
+    const exePath = getBackendExePath();
+    if (!fs.existsSync(exePath)) {
+      throw new Error(`后端可执行文件未找到: ${exePath}`);
+    }
+
+    backendProcess = spawn(exePath, [], {
+      cwd: path.dirname(exePath),
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  }
 
   backendProcess.stdout?.on('data', (chunk) => {
     process.stdout.write(`[backend] ${chunk}`);

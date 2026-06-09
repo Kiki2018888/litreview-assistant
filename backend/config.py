@@ -2,21 +2,46 @@
 
 所有配置项支持从环境变量读取（前缀 RA_），未设置时使用默认值。
 与 SPEC §7 中的配置完全一致。
+
+路径规则：
+- 开发模式（Python 直接运行）：数据目录为项目根下的 data/
+- 生产模式（PyInstaller 打包）：数据目录为用户应用数据目录
+  （Windows %APPDATA%/ResearchAssistant/data/，
+   macOS ~/Library/Application Support/ResearchAssistant/data/，
+   Linux ~/.local/share/ResearchAssistant/data/）
 """
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 # ---------------------------------------------------------------------------
-# 项目路径（不含环境变量覆盖——路径是代码决定的，不是配置）
+# 运行时路径解析
 # ---------------------------------------------------------------------------
 
-# backend/config.py → backend/ → 项目根
+
+def _get_app_data_dir() -> Path:
+    """获取用户应用数据目录（生产模式）或项目目录（开发模式）。"""
+    if getattr(sys, "frozen", False):
+        # PyInstaller 打包后：使用系统用户数据目录（有写入权限）
+        if sys.platform == "win32":
+            base = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+        elif sys.platform == "darwin":
+            base = Path.home() / "Library" / "Application Support"
+        else:
+            base = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
+        return base / "ResearchAssistant" / "data"
+    else:
+        # 开发模式：项目根目录下的 data/
+        return Path(__file__).resolve().parents[1] / "data"
+
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = _PROJECT_ROOT / "data"
+DATA_DIR = _get_app_data_dir()
 PDF_DIR = DATA_DIR / "papers"
 DB_PATH = DATA_DIR / "research-assistant.db"
 DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Generator
 from pathlib import Path
 
@@ -19,12 +20,26 @@ from backend.models.tables import Base
 
 # ---------------------------------------------------------------------------
 # 路径与 URL
+# 与 backend.config 保持一致：生产模式用用户数据目录，开发模式用项目目录
 # ---------------------------------------------------------------------------
 
 
-# 项目根目录（backend/services/db.py → backend/ → 项目根）
+def _get_app_data_dir() -> Path:
+    """获取用户应用数据目录（生产模式）或项目目录（开发模式）。"""
+    if getattr(sys, "frozen", False):
+        if sys.platform == "win32":
+            base = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+        elif sys.platform == "darwin":
+            base = Path.home() / "Library" / "Application Support"
+        else:
+            base = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
+        return base / "ResearchAssistant" / "data"
+    else:
+        return Path(__file__).resolve().parents[2] / "data"
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = PROJECT_ROOT / "data"
+DATA_DIR = _get_app_data_dir()
 DB_PATH = DATA_DIR / "research-assistant.db"
 DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
 

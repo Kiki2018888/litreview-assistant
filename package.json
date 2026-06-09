@@ -6,7 +6,10 @@
   "main": "electron/main.js",
   "scripts": {
     "electron:dev": "electron .",
-    "electron:build": "electron-builder"
+    "build:frontend": "cd frontend && npm run build",
+    "build:backend": "cd backend && pyinstaller backend.spec --distpath ../dist --workpath ../dist/build-backend",
+    "electron:build": "npm run build:frontend && npm run build:backend && electron-builder",
+    "dist": "electron-builder"
   },
   "devDependencies": {
     "electron": "^35.1.5",
@@ -21,22 +24,29 @@
     "files": [
       "electron/**/*",
       "frontend/dist/**/*",
-      "backend/**/*",
-      "requirements.txt",
       "package.json"
     ],
     "extraResources": [
       {
-        "from": "backend",
+        "from": "dist/backend",
         "to": "backend",
         "filter": ["**/*"]
       }
     ],
     "win": {
-      "target": ["nsis"]
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
     },
     "mac": {
       "target": ["dmg"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
     }
   }
 }
