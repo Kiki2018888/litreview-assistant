@@ -15,6 +15,7 @@ import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import delete, func, literal_column, select, text
 from sqlalchemy.orm import Session
 
@@ -358,6 +359,32 @@ def list_papers(
 # ===================================================================
 # 参数化路径路由组 ({paper_id}  必须在固定路径之后)
 # ===================================================================
+
+
+# -------------------------------------------------------------------
+# 4.5. 获取 PDF 文件二进制（用于 Electron blob URL 预览）
+# -------------------------------------------------------------------
+
+
+@router.get("/{paper_id}/file")
+def get_paper_file(
+    paper_id: str,
+    db: Session = Depends(get_db),
+):
+    """返回 PDF 二进制，供前端通过 blob URL 预览（绕过 Electron webSecurity 拦截）."""
+    paper = db.get(Paper, paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="文献不存在")
+
+    pdf_path = paper.file_path
+    if not pdf_path or not os.path.isfile(pdf_path):
+        raise HTTPException(status_code=404, detail="PDF 文件不存在")
+
+    return FileResponse(
+        path=str(pdf_path),
+        media_type="application/pdf",
+        filename=f"{paper_id}.pdf",
+    )
 
 
 # -------------------------------------------------------------------
