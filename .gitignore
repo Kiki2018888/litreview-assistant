@@ -67,6 +67,7 @@ out/
 .idea/
 .vscode/
 .codebuddy/
+指令生成RULES.md
 *.swp
 *.swo
 *~
