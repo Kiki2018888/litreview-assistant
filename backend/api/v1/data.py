@@ -232,14 +232,21 @@ def reset_db(body: ResetDbRequest, request: Request):
         logger.info("已清空 PDF 目录: %s", PDF_DIR)
 
     # 4. 删除降级密钥文件（如果存在）
-    from backend.api.v1.settings import _FALLBACK_KEY_FILE
+    from backend.services.secrets import _FALLBACK_KEY_FILE
 
     if _FALLBACK_KEY_FILE.exists():
         os.remove(str(_FALLBACK_KEY_FILE))
 
-    # 5. 重新初始化（ORM 表）
+    # 5. 清除模块级缓存（Fernet / API Key）
+    import backend.services.secrets as secrets_mod
+
+    secrets_mod._cached_fernet = None
+    secrets_mod._cached_api_key = None
+    logger.info("已清除密钥缓存")
+
+    # 6. 重新初始化（ORM 表）
     init_db()
-    # 6. 重建 FTS5 虚拟表和同步触发器（init_db 不创建 FTS5）
+    # 7. 重建 FTS5 虚拟表和同步触发器（init_db 不创建 FTS5）
     _init_fts5()
     logger.info("数据库已重新初始化（含 FTS5）")
 

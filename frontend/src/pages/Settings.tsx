@@ -258,9 +258,14 @@ export default function SettingsPage() {
   const handleTestConnection = useCallback(async () => {
     setTestStatus("testing")
     try {
-      await apiPost<{ valid: boolean; model: string }>("/settings/test")
-      if (isMounted.current) setTestStatus("connected")
-      toast.success("连接成功")
+      const res = await apiPost<{ valid: boolean; message: string }>("/settings/test")
+      if (res.valid) {
+        if (isMounted.current) setTestStatus("connected")
+        toast.success(res.message || "连接成功")
+      } else {
+        if (isMounted.current) setTestStatus("failed")
+        toast.error(res.message || "连接失败，请检查 API Key")
+      }
     } catch {
       if (isMounted.current) setTestStatus("failed")
       toast.error("连接失败，请检查 API Key")

@@ -211,9 +211,9 @@ class TestFormatError:
 class TestApiKeyIntegration:
     """API Key 解密集成测试."""
 
-    def test_get_api_key_delegates_to_settings(self):
-        """_get_api_key 委托 settings._get_decrypted_api_key."""
-        with patch("backend.api.v1.settings._get_decrypted_api_key", return_value="sk-decrypted"):
+    def test_get_api_key_delegates_to_secrets(self):
+        """_get_api_key 委托 secrets._get_decrypted_api_key."""
+        with patch("backend.services.secrets._get_decrypted_api_key", return_value="sk-decrypted"):
             from backend.services.kimi_client import _get_api_key
 
             key = _get_api_key()
@@ -221,7 +221,7 @@ class TestApiKeyIntegration:
 
     def test_get_api_key_raises_when_none(self):
         """无 API Key 时抛出 ValueError."""
-        with patch("backend.api.v1.settings._get_decrypted_api_key", return_value=None):
+        with patch("backend.services.secrets._get_decrypted_api_key", return_value=None):
             from backend.services.kimi_client import _get_api_key
 
             with pytest.raises(ValueError, match="API Key 未配置"):

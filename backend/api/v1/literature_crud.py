@@ -38,6 +38,7 @@ from backend.models.schemas import (
 )
 from backend.models.tables import (
     Batch,
+    ChatSession,
     ExtractedData,
     Paper,
     PaperPage,
@@ -608,6 +609,16 @@ def delete_paper(
             ),
             {"bid": batch_id},
         )
+
+    # 清理 chat_sessions 中的悬空引用
+    sessions = db.query(ChatSession).filter(
+        ChatSession.paper_ids.isnot(None)
+    ).all()
+    for session in sessions:
+        if session.paper_ids and paper_id in session.paper_ids:
+            session.paper_ids = [pid for pid in session.paper_ids if pid != paper_id]
+            if not session.paper_ids:
+                session.primary_paper_id = None
 
     db.commit()
 

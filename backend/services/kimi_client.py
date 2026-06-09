@@ -47,7 +47,7 @@ def _get_api_key() -> str:
         ValueError: API Key 未配置（提示用户前往设置页配置）。
     """
     try:
-        from backend.api.v1.settings import _get_decrypted_api_key
+        from backend.services.secrets import _get_decrypted_api_key
 
         plain = _get_decrypted_api_key()
         if plain:
@@ -148,8 +148,8 @@ class KimiClient:
                 response = await self._client.chat.completions.create(
                     model=model or self._model,
                     messages=messages,
-                    temperature=temperature or DEFAULT_TEMPERATURE,
-                    max_tokens=max_tokens or DEFAULT_MAX_TOKENS,
+                    temperature=temperature if temperature is not None else DEFAULT_TEMPERATURE,
+                    max_tokens=max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS,
                 )
                 return response.choices[0].message.content or ""
 
@@ -205,8 +205,8 @@ class KimiClient:
                 stream = await self._client.chat.completions.create(
                     model=model or self._model,
                     messages=messages,
-                    temperature=temperature or DEFAULT_TEMPERATURE,
-                    max_tokens=max_tokens or DEFAULT_MAX_TOKENS,
+                    temperature=temperature if temperature is not None else DEFAULT_TEMPERATURE,
+                    max_tokens=max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS,
                     stream=True,
                 )
 
