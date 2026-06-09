@@ -325,6 +325,10 @@ class Setting(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     api_key_encrypted: Mapped[Optional[bytes]] = mapped_column(BLOB, nullable=True)
+    api_provider: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="auto", server_default="auto"
+    )
+    api_base_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     default_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     temperature: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     max_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

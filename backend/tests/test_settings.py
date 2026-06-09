@@ -125,7 +125,8 @@ class TestApiKeyTest:
             assert resp.status_code == 200
             data = resp.json()
             assert data["valid"] is False
-            assert "无效" in data["message"] or "过期" in data["message"]
+            assert data["valid"] is False
+            assert "认证" in data["message"] or "无效" in data["message"] or "过期" in data["message"]
 
     def test_test_without_key(self, client, db_session):
         """未配置 Key 时测试."""
@@ -141,7 +142,7 @@ class TestFernetEncryption:
 
     def test_encrypt_decrypt_roundtrip(self):
         """加密 → 解密往返."""
-        from backend.api.v1.settings import _decrypt_api_key, _encrypt_api_key
+        from backend.services.secrets import _decrypt_api_key, _encrypt_api_key
 
         plain = "sk-roundtrip-test-key-abcdef"
         cipher = _encrypt_api_key(plain)

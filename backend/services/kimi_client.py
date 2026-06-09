@@ -3,7 +3,7 @@
 封装 OpenAI 兼容的 Kimi API 调用，支持：
 - 普通 chat 请求与 SSE 流式请求
 - 自动重试（指数退避）
-- API Key 从 settings 表读取，不硬编码
+- API Key / endpoint 从 settings 表动态读取（多 Provider）
 """
 from __future__ import annotations
 
@@ -17,49 +17,18 @@ from openai.types.chat import ChatCompletionMessageParam
 
 from backend.config import (
     DEFAULT_MAX_TOKENS,
-    DEFAULT_MODEL,
     DEFAULT_TEMPERATURE,
-    KIMI_BASE_URL,
     MAX_RETRIES,
     REQUEST_TIMEOUT,
     RETRY_BASE_DELAY,
 )
+from backend.services.api_provider import (
+    ResolvedApiConfig,
+    load_runtime_config_from_db,
+)
 from backend.services.db import SessionLocal
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# API Key 获取
-# ---------------------------------------------------------------------------
-
-
-def _get_api_key() -> str:
-    """从 settings 表读取 API Key（解密后的明文）.
-
-    委托 M6 settings 模块的 Fernet 解密逻辑读取并解密 API Key。
-    如果 settings 表中没有 API Key 或解密失败，抛出友好提示。
-
-    Returns:
-        解密后的 API Key 字符串。
-
-    Raises:
-        ValueError: API Key 未配置（提示用户前往设置页配置）。
-    """
-    try:
-        from backend.services.secrets import _get_decrypted_api_key
-
-        plain = _get_decrypted_api_key()
-        if plain:
-            return plain
-        raise ValueError(
-            "API Key 未配置。请前往「设置」页面输入 Kimi API Key，"
-            "API Key 将加密存储在本地数据库中。"
-        )
-    except ImportError as exc:
-        raise RuntimeError(
-            f"无法加载设置模块，请确认应用已正确初始化: {exc}"
-        ) from exc
 
 
 def _ensure_settings_row() -> None:
@@ -67,57 +36,46 @@ def _ensure_settings_row() -> None:
     db = SessionLocal()
     try:
         from sqlalchemy import text
+
+        from backend.config import DEFAULT_MAX_TOKENS, DEFAULT_MODEL, DEFAULT_TEMPERATURE
+        from backend.services.api_provider import DEFAULT_MOONSHOT_BASE_URL, PROVIDER_AUTO
+
         row = db.execute(text("SELECT 1 FROM settings WHERE id = 1")).fetchone()
         if row is None:
-            db.execute(text(
-                "INSERT INTO settings (id, default_model, temperature, max_tokens, theme) "
-                "VALUES (1, :model, :temp, :tokens, :theme)"
-            ), {
-                "model": DEFAULT_MODEL,
-                "temp": DEFAULT_TEMPERATURE,
-                "tokens": DEFAULT_MAX_TOKENS,
-                "theme": "system",
-            })
+            db.execute(
+                text(
+                    "INSERT INTO settings "
+                    "(id, api_provider, api_base_url, default_model, temperature, max_tokens, theme) "
+                    "VALUES (1, :provider, :base_url, :model, :temp, :tokens, :theme)"
+                ),
+                {
+                    "provider": PROVIDER_AUTO,
+                    "base_url": DEFAULT_MOONSHOT_BASE_URL,
+                    "model": DEFAULT_MODEL,
+                    "temp": DEFAULT_TEMPERATURE,
+                    "tokens": DEFAULT_MAX_TOKENS,
+                    "theme": "system",
+                },
+            )
             db.commit()
     finally:
         db.close()
 
 
-# ---------------------------------------------------------------------------
-# KimiClient
-# ---------------------------------------------------------------------------
-
-
 class KimiClient:
-    """Kimi API 异步客户端.
-
-    用法::
-
-        client = KimiClient()
-        # 普通请求
-        reply = await client.chat([{"role": "user", "content": "Hello"}])
-        # 流式请求
-        async for chunk in client.chat_stream([{"role": "user", "content": "Hello"}]):
-            print(chunk, end="")
-    """
+    """Kimi API 异步客户端（多 Provider endpoint）."""
 
     def __init__(self) -> None:
-        """初始化客户端，从 settings 表读取 API Key."""
+        """初始化客户端，从 settings 表读取 Key 与 endpoint."""
         _ensure_settings_row()
-
-        api_key = _get_api_key()
-
+        self._config: ResolvedApiConfig = load_runtime_config_from_db()
         self._client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=KIMI_BASE_URL,
+            api_key=self._config.api_key,
+            base_url=self._config.base_url,
             timeout=float(REQUEST_TIMEOUT),
-            max_retries=0,  # 我们自己控制重试
+            max_retries=0,
         )
-        self._model = DEFAULT_MODEL
-
-    # ------------------------------------------------------------------
-    # 普通请求
-    # ------------------------------------------------------------------
+        self._model = self._config.model
 
     async def chat(
         self,
@@ -127,20 +85,7 @@ class KimiClient:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
-        """发送非流式 chat 请求，返回完整回复文本.
-
-        Args:
-            messages: OpenAI 格式的消息列表。
-            model: 模型名，默认使用 config.DEFAULT_MODEL。
-            temperature: 采样温度，默认使用 config.DEFAULT_TEMPERATURE。
-            max_tokens: 最大输出 token，默认使用 config.DEFAULT_MAX_TOKENS。
-
-        Returns:
-            AI 回复的完整文本。
-
-        Raises:
-            RuntimeError: 所有重试均失败。
-        """
+        """发送非流式 chat 请求，返回完整回复文本."""
         last_error: Optional[Exception] = None
 
         for attempt in range(MAX_RETRIES + 1):
@@ -172,10 +117,6 @@ class KimiClient:
             f"最后错误: {_format_error(last_error)}"
         )
 
-    # ------------------------------------------------------------------
-    # SSE 流式请求
-    # ------------------------------------------------------------------
-
     async def chat_stream(
         self,
         messages: list[ChatCompletionMessageParam],
@@ -184,20 +125,7 @@ class KimiClient:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
-        """发送 SSE 流式 chat 请求，逐块 yield 文本.
-
-        Args:
-            messages: OpenAI 格式的消息列表。
-            model: 模型名，默认使用 config.DEFAULT_MODEL。
-            temperature: 采样温度。
-            max_tokens: 最大输出 token。
-
-        Yields:
-            str: 每块增量文本内容。
-
-        Raises:
-            RuntimeError: 所有重试均失败。
-        """
+        """发送 SSE 流式 chat 请求，逐块 yield 文本."""
         last_error: Optional[Exception] = None
 
         for attempt in range(MAX_RETRIES + 1):
@@ -215,7 +143,7 @@ class KimiClient:
                     if delta.content:
                         yield delta.content
 
-                return  # 流式请求成功，退出重试循环
+                return
 
             except Exception as exc:
                 last_error = exc
@@ -237,11 +165,6 @@ class KimiClient:
         )
 
 
-# ---------------------------------------------------------------------------
-# 错误格式化
-# ---------------------------------------------------------------------------
-
-
 def _format_error(exc: Optional[Exception]) -> str:
     """将异常格式化为用户友好的错误信息."""
     if exc is None:
@@ -249,9 +172,10 @@ def _format_error(exc: Optional[Exception]) -> str:
 
     msg = str(exc)
 
-    # OpenAI API 返回的标准错误格式
     if "401" in msg or "Unauthorized" in msg or "Incorrect API key" in msg:
-        return "API Key 无效或已过期，请检查设置页面的 API Key 是否正确。"
+        return "API Key 无效或 endpoint 不匹配，请检查设置页面的 Provider 与 API Key 类型。"
+    if "403" in msg and "Coding" in msg:
+        return "Kimi For Coding Key 不支持当前应用客户端，请改用 Moonshot 平台 API Key。"
     if "429" in msg or "Rate limit" in msg:
         return "API 请求过于频繁，请稍后重试。"
     if "503" in msg or "Service Unavailable" in msg:
@@ -262,12 +186,13 @@ def _format_error(exc: Optional[Exception]) -> str:
     return f"API 调用异常: {msg}"
 
 
-# ---------------------------------------------------------------------------
-# 模块级便捷函数（兼容快速调用）
-# ---------------------------------------------------------------------------
-
-
 _client_singleton: Optional[KimiClient] = None
+
+
+def reset_kimi_client() -> None:
+    """设置变更后重置客户端单例."""
+    global _client_singleton
+    _client_singleton = None
 
 
 def _get_client() -> KimiClient:
@@ -299,4 +224,5 @@ __all__ = [
     "KimiClient",
     "chat",
     "chat_stream",
+    "reset_kimi_client",
 ]

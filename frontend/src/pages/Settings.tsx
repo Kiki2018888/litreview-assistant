@@ -30,8 +30,36 @@ import {
   DialogDescription,
   DialogFooter,
 } from "../components/ui/dialog"
-import type { Settings, SettingsUpdateRequest } from "../types"
+import type {
+  ApiKeyTestResponse,
+  ApiProvider,
+  Settings,
+  SettingsUpdateRequest,
+} from "../types"
 import type { UpdateStatus } from "../types/electron"
+
+const MOONSHOT_BASE_URL = "https://api.moonshot.cn/v1"
+const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/v1"
+
+function inferProviderFromKey(key: string): {
+  provider: ApiProvider
+  baseUrl: string
+} {
+  const k = key.trim()
+  if (k.startsWith("sk-kimi-")) {
+    return { provider: "kimi-coding", baseUrl: KIMI_CODING_BASE_URL }
+  }
+  if (k.startsWith("sk-")) {
+    return { provider: "moonshot", baseUrl: MOONSHOT_BASE_URL }
+  }
+  return { provider: "custom", baseUrl: MOONSHOT_BASE_URL }
+}
+
+function defaultBaseUrlForProvider(provider: ApiProvider): string {
+  if (provider === "kimi-coding") return KIMI_CODING_BASE_URL
+  if (provider === "moonshot") return MOONSHOT_BASE_URL
+  return MOONSHOT_BASE_URL
+}
 
 // ============================================================================
 // Settings 页面
@@ -45,6 +73,9 @@ export default function SettingsPage() {
   const [showKey, setShowKey] = useState(false)
   const [hasApiKey, setHasApiKey] = useState(false)
   const [apiKeyPreview, setApiKeyPreview] = useState("")
+  const [apiProvider, setApiProvider] = useState<ApiProvider>("auto")
+  const [apiBaseUrl, setApiBaseUrl] = useState(MOONSHOT_BASE_URL)
+  const [testEndpoint, setTestEndpoint] = useState<string | null>(null)
   const [model, setModel] = useState("kimi-k2-6")
   const [availableModels, setAvailableModels] = useState<string[]>([
     "kimi-k2-5",
@@ -90,6 +121,8 @@ export default function SettingsPage() {
       if (!isMounted.current) return
       setHasApiKey(data.has_api_key)
       setApiKeyPreview(data.api_key_preview)
+      if (data.api_provider) setApiProvider(data.api_provider)
+      if (data.api_base_url) setApiBaseUrl(data.api_base_url)
       if (data.default_model) setModel(data.default_model)
       if (data.available_models?.length)
         setAvailableModels(data.available_models)
@@ -196,9 +229,36 @@ export default function SettingsPage() {
   const handleApiKeyChange = useCallback(
     (value: string) => {
       setApiKey(value)
+      if (apiProvider === "auto" && value.trim()) {
+        const inferred = inferProviderFromKey(value)
+        setApiBaseUrl(inferred.baseUrl)
+      }
       if (value.trim()) {
         debouncedSave({ api_key: value })
       }
+    },
+    [debouncedSave, apiProvider]
+  )
+
+  const handleProviderChange = useCallback(
+    (value: ApiProvider) => {
+      setApiProvider(value)
+      let nextUrl = apiBaseUrl
+      if (value === "auto" && apiKey.trim()) {
+        nextUrl = inferProviderFromKey(apiKey).baseUrl
+      } else if (value !== "custom") {
+        nextUrl = defaultBaseUrlForProvider(value)
+      }
+      setApiBaseUrl(nextUrl)
+      debouncedSave({ api_provider: value, api_base_url: nextUrl })
+    },
+    [apiKey, apiBaseUrl, debouncedSave]
+  )
+
+  const handleBaseUrlChange = useCallback(
+    (value: string) => {
+      setApiBaseUrl(value)
+      debouncedSave({ api_base_url: value })
     },
     [debouncedSave]
   )
@@ -257,8 +317,16 @@ export default function SettingsPage() {
   // ── 测试连接 ──
   const handleTestConnection = useCallback(async () => {
     setTestStatus("testing")
+    setTestEndpoint(null)
     try {
-      const res = await apiPost<{ valid: boolean; message: string }>("/settings/test", {})
+      const res = await apiPost<ApiKeyTestResponse>("/settings/test", {
+        api_key: apiKey.trim() || undefined,
+        api_provider: apiProvider,
+        api_base_url: apiBaseUrl,
+      })
+      if (res.provider && res.base_url) {
+        setTestEndpoint(`${res.provider} · ${res.base_url}`)
+      }
       if (res.valid) {
         if (isMounted.current) setTestStatus("connected")
         toast.success(res.message || "连接成功")
@@ -270,7 +338,7 @@ export default function SettingsPage() {
       if (isMounted.current) setTestStatus("failed")
       toast.error("连接失败，请检查 API Key")
     }
-  }, [])
+  }, [apiKey, apiProvider, apiBaseUrl])
 
   // ── 导出数据库 ──
   const handleExport = useCallback(async () => {
@@ -386,6 +454,46 @@ export default function SettingsPage() {
               <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
                 <CheckCircle2 className="h-3 w-3" />
                 连接正常
+                {testEndpoint && (
+                  <span className="text-muted-foreground ml-1">
+                    （{testEndpoint}）
+                  </span>
+                )}
+              </p>
+            )}
+          </div>
+
+          {/* API Provider */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">API Provider</label>
+            <select
+              value={apiProvider}
+              onChange={(e) =>
+                handleProviderChange(e.target.value as ApiProvider)
+              }
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <option value="auto">自动识别（推荐）</option>
+              <option value="moonshot">Moonshot 通用平台</option>
+              <option value="kimi-coding">Kimi For Coding</option>
+              <option value="custom">自定义</option>
+            </select>
+          </div>
+
+          {/* API Base URL */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">API Base URL</label>
+            <Input
+              value={apiBaseUrl}
+              onChange={(e) => handleBaseUrlChange(e.target.value)}
+              readOnly={apiProvider === "auto"}
+              placeholder={MOONSHOT_BASE_URL}
+              className={apiProvider === "auto" ? "bg-muted" : undefined}
+            />
+            {apiProvider === "auto" && (
+              <p className="text-xs text-muted-foreground">
+                根据 Key 前缀自动填充：
+                sk-kimi- → Kimi Coding；sk- → Moonshot
               </p>
             )}
           </div>

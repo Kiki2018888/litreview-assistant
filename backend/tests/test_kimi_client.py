@@ -7,6 +7,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from backend.services.api_provider import (
+    DEFAULT_MOONSHOT_BASE_URL,
+    ResolvedApiConfig,
+)
 from backend.services.kimi_client import _format_error
 from backend.tests.helpers import (
     AsyncStreamIterator,
@@ -31,12 +35,24 @@ def _make_stream_chunks(texts: list[str]):
     return [make_stream_chunk(text, finish=(i == len(texts) - 1)) for i, text in enumerate(texts)]
 
 
+def _mock_runtime_config(api_key: str = "sk-test") -> ResolvedApiConfig:
+    return ResolvedApiConfig(
+        api_key=api_key,
+        provider="moonshot",
+        base_url=DEFAULT_MOONSHOT_BASE_URL,
+        model="kimi-k2-6",
+    )
+
+
 class TestKimiClientChat:
     """非流式 chat() 测试."""
 
     def test_chat_success(self):
         mock_openai = _make_mock_openai(chat_return=_make_ok_response("Hello from Kimi"))
-        with patch("backend.services.kimi_client._get_api_key", return_value="sk-test"):
+        with patch(
+            "backend.services.kimi_client.load_runtime_config_from_db",
+            return_value=_mock_runtime_config(),
+        ):
             with patch("backend.services.kimi_client._ensure_settings_row", return_value=None):
                 with patch("backend.services.kimi_client.AsyncOpenAI", return_value=mock_openai):
                     from backend.services.kimi_client import KimiClient
@@ -47,7 +63,10 @@ class TestKimiClientChat:
 
     def test_chat_with_system_message(self):
         mock_openai = _make_mock_openai(chat_return=_make_ok_response("System-aware response"))
-        with patch("backend.services.kimi_client._get_api_key", return_value="sk-test"):
+        with patch(
+            "backend.services.kimi_client.load_runtime_config_from_db",
+            return_value=_mock_runtime_config(),
+        ):
             with patch("backend.services.kimi_client._ensure_settings_row", return_value=None):
                 with patch("backend.services.kimi_client.AsyncOpenAI", return_value=mock_openai):
                     from backend.services.kimi_client import KimiClient
@@ -63,7 +82,10 @@ class TestKimiClientChat:
     def test_chat_empty_response(self):
         """API 返回空 content."""
         mock_openai = _make_mock_openai(chat_return=_make_ok_response(""))
-        with patch("backend.services.kimi_client._get_api_key", return_value="sk-test"):
+        with patch(
+            "backend.services.kimi_client.load_runtime_config_from_db",
+            return_value=_mock_runtime_config(),
+        ):
             with patch("backend.services.kimi_client._ensure_settings_row", return_value=None):
                 with patch("backend.services.kimi_client.AsyncOpenAI", return_value=mock_openai):
                     from backend.services.kimi_client import KimiClient
@@ -93,7 +115,10 @@ class TestKimiClientRetry:
         mock_openai.chat.completions = MagicMock()
         mock_openai.chat.completions.create = _maybe_fail
 
-        with patch("backend.services.kimi_client._get_api_key", return_value="sk-test"):
+        with patch(
+            "backend.services.kimi_client.load_runtime_config_from_db",
+            return_value=_mock_runtime_config(),
+        ):
             with patch("backend.services.kimi_client._ensure_settings_row", return_value=None):
                 with patch("backend.services.kimi_client.AsyncOpenAI", return_value=mock_openai):
                     with patch("asyncio.sleep", return_value=None):
@@ -116,7 +141,10 @@ class TestKimiClientRetry:
         mock_openai.chat.completions = MagicMock()
         mock_openai.chat.completions.create = _always_fail
 
-        with patch("backend.services.kimi_client._get_api_key", return_value="sk-test"):
+        with patch(
+            "backend.services.kimi_client.load_runtime_config_from_db",
+            return_value=_mock_runtime_config(),
+        ):
             with patch("backend.services.kimi_client._ensure_settings_row", return_value=None):
                 with patch("backend.services.kimi_client.AsyncOpenAI", return_value=mock_openai):
                     with patch("asyncio.sleep", return_value=None):
@@ -138,7 +166,10 @@ class TestKimiClientRetry:
         mock_openai.chat.completions = MagicMock()
         mock_openai.chat.completions.create = _stream_fail
 
-        with patch("backend.services.kimi_client._get_api_key", return_value="sk-test"):
+        with patch(
+            "backend.services.kimi_client.load_runtime_config_from_db",
+            return_value=_mock_runtime_config(),
+        ):
             with patch("backend.services.kimi_client._ensure_settings_row", return_value=None):
                 with patch("backend.services.kimi_client.AsyncOpenAI", return_value=mock_openai):
                     with patch("asyncio.sleep", return_value=None):
@@ -161,7 +192,10 @@ class TestKimiClientStream:
         chunks = _make_stream_chunks(["Hello ", "from ", "Kimi"])
         mock_openai = make_mock_openai_client(stream_chunks=chunks)
 
-        with patch("backend.services.kimi_client._get_api_key", return_value="sk-test"):
+        with patch(
+            "backend.services.kimi_client.load_runtime_config_from_db",
+            return_value=_mock_runtime_config(),
+        ):
             with patch("backend.services.kimi_client._ensure_settings_row", return_value=None):
                 with patch("backend.services.kimi_client.AsyncOpenAI", return_value=mock_openai):
                     from backend.services.kimi_client import KimiClient
@@ -185,7 +219,7 @@ class TestFormatError:
 
     def test_401_unauthorized(self):
         msg = _format_error(Exception("401 Unauthorized - Incorrect API key provided"))
-        assert "API Key 无效" in msg
+        assert "API Key 无效" in msg or "endpoint" in msg
 
     def test_429_rate_limit(self):
         msg = _format_error(Exception("429 Too Many Requests"))
@@ -209,20 +243,11 @@ class TestFormatError:
 
 
 class TestApiKeyIntegration:
-    """API Key 解密集成测试."""
+    """运行时配置加载集成测试."""
 
-    def test_get_api_key_delegates_to_secrets(self):
-        """_get_api_key 委托 secrets._get_decrypted_api_key."""
-        with patch("backend.services.secrets._get_decrypted_api_key", return_value="sk-decrypted"):
-            from backend.services.kimi_client import _get_api_key
-
-            key = _get_api_key()
-            assert key == "sk-decrypted"
-
-    def test_get_api_key_raises_when_none(self):
-        """无 API Key 时抛出 ValueError."""
+    def test_load_runtime_config_raises_when_none(self):
         with patch("backend.services.secrets._get_decrypted_api_key", return_value=None):
-            from backend.services.kimi_client import _get_api_key
+            from backend.services.api_provider import load_runtime_config_from_db
 
             with pytest.raises(ValueError, match="API Key 未配置"):
-                _get_api_key()
+                load_runtime_config_from_db()

@@ -359,6 +359,8 @@ class PaperAuditLogResponse(PaperAuditLogBase):
 
 
 class SettingBase(_ORMModel):
+    api_provider: Optional[str] = "auto"
+    api_base_url: Optional[str] = None
     default_model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
@@ -369,6 +371,8 @@ class SettingUpdate(_ORMModel):
     """设置更新请求（API Key 不直接进 schema，由服务层处理加密）."""
 
     api_key: Optional[str] = None
+    api_provider: Optional[str] = None
+    api_base_url: Optional[str] = None
     default_model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None

@@ -169,10 +169,14 @@ export interface ChatSession {
 // ---------------------------------------------------------------------------
 
 /** SettingResponse — 设置响应（api_key 不返回明文） */
+export type ApiProvider = "auto" | "moonshot" | "kimi-coding" | "custom"
+
 export interface Settings {
   id: number
   has_api_key: boolean
   api_key_preview: string
+  api_provider: ApiProvider
+  api_base_url: string
   default_model: string | null
   available_models: string[]
   temperature: number | null
@@ -184,10 +188,20 @@ export interface Settings {
 /** SettingUpdate — 设置更新请求 */
 export interface SettingsUpdateRequest {
   api_key?: string | null
+  api_provider?: ApiProvider | null
+  api_base_url?: string | null
   default_model?: string | null
   temperature?: number | null
   max_tokens?: number | null
   theme?: string | null
+}
+
+/** ApiKeyTestResponse — API Key 测试响应 */
+export interface ApiKeyTestResponse {
+  valid: boolean
+  message: string
+  provider?: string | null
+  base_url?: string | null
 }
 
 // ---------------------------------------------------------------------------

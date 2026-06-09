@@ -15,34 +15,63 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend.config import (
-    AVAILABLE_MODELS,
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
     DEFAULT_TEMPERATURE,
-    KIMI_BASE_URL,
 )
 from backend.models.schemas import SettingUpdate
 from backend.models.tables import Setting
+from backend.services.api_provider import (
+    DEFAULT_MOONSHOT_BASE_URL,
+    PROVIDER_AUTO,
+    VALID_PROVIDERS,
+    available_models_for_provider,
+    infer_provider,
+    resolve_api_config,
+)
 from backend.services.db import SessionLocal
 from backend.services.secrets import (
     _cached_api_key,
-    _cached_fernet,
-    _decrypt_api_key,
     _encrypt_api_key,
     _get_decrypted_api_key,
-    _get_fernet_key,
     _mask_api_key,
-    _FALLBACK_KEY_FILE,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
+
+
+# ---------------------------------------------------------------------------
+# Schema 迁移辅助（Alembic 不可用时的 fallback）
+# ---------------------------------------------------------------------------
+
+
+def _migrate_settings_columns(db: Session) -> None:
+    """为已有数据库补充 api_provider / api_base_url 列."""
+    rows = db.execute(text("PRAGMA table_info(settings)")).fetchall()
+    colnames = {row[1] for row in rows}
+    if "api_provider" not in colnames:
+        db.execute(
+            text(
+                "ALTER TABLE settings ADD COLUMN api_provider VARCHAR(32) "
+                "NOT NULL DEFAULT 'auto'"
+            )
+        )
+    if "api_base_url" not in colnames:
+        db.execute(
+            text(
+                "ALTER TABLE settings ADD COLUMN api_base_url VARCHAR(500) "
+                f"DEFAULT '{DEFAULT_MOONSHOT_BASE_URL}'"
+            )
+        )
+    db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -52,12 +81,14 @@ router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
 def _ensure_settings_row(db: Session) -> Setting:
     """确保 settings 表有 id=1 的行，不存在则创建."""
-    from datetime import datetime
+    _migrate_settings_columns(db)
 
     row = db.query(Setting).filter(Setting.id == 1).first()
     if not row:
         row = Setting(
             id=1,
+            api_provider=PROVIDER_AUTO,
+            api_base_url=DEFAULT_MOONSHOT_BASE_URL,
             default_model=DEFAULT_MODEL,
             temperature=DEFAULT_TEMPERATURE,
             max_tokens=DEFAULT_MAX_TOKENS,
@@ -66,7 +97,39 @@ def _ensure_settings_row(db: Session) -> Setting:
         db.add(row)
         db.commit()
         db.refresh(row)
+    else:
+        if not row.api_provider:
+            row.api_provider = PROVIDER_AUTO
+        if not row.api_base_url:
+            row.api_base_url = DEFAULT_MOONSHOT_BASE_URL
+            db.commit()
+            db.refresh(row)
     return row
+
+
+def _build_settings_response(row: Setting, preview: str, has_key: bool) -> "SettingsDetailResponse":
+    provider = row.api_provider or PROVIDER_AUTO
+    models = available_models_for_provider(
+        infer_provider(preview.replace("*", "sk-"))[0]
+        if provider == PROVIDER_AUTO and has_key and preview
+        else provider
+    )
+    if provider != PROVIDER_AUTO:
+        models = available_models_for_provider(provider)
+
+    return SettingsDetailResponse(
+        id=row.id,
+        has_api_key=has_key,
+        api_key_preview=preview,
+        api_provider=provider,
+        api_base_url=row.api_base_url or DEFAULT_MOONSHOT_BASE_URL,
+        default_model=row.default_model,
+        available_models=models,
+        temperature=row.temperature,
+        max_tokens=row.max_tokens,
+        theme=row.theme,
+        updated_at=row.updated_at.isoformat() if row.updated_at else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +143,8 @@ class SettingsDetailResponse(BaseModel):
     id: int
     has_api_key: bool = False
     api_key_preview: str = ""
+    api_provider: str = PROVIDER_AUTO
+    api_base_url: str = DEFAULT_MOONSHOT_BASE_URL
     default_model: Optional[str] = None
     available_models: list[str] = Field(default_factory=list)
     temperature: Optional[float] = None
@@ -93,8 +158,9 @@ class SettingsDetailResponse(BaseModel):
 class ApiKeyTestRequest(BaseModel):
     """API Key 测试请求."""
 
-    # 使用传入的 key 或已存储的 key（二选一，显式指定）
     api_key: Optional[str] = Field(None, description="要测试的 API Key（为空则测试已存储的）")
+    api_provider: Optional[str] = Field(PROVIDER_AUTO, description="auto/moonshot/kimi-coding/custom")
+    api_base_url: Optional[str] = Field(None, description="手动覆盖 endpoint")
 
 
 class ApiKeyTestResponse(BaseModel):
@@ -102,6 +168,8 @@ class ApiKeyTestResponse(BaseModel):
 
     valid: bool
     message: str
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -125,12 +193,22 @@ def get_settings():
             else:
                 preview = "********"
 
+        provider = row.api_provider or PROVIDER_AUTO
+        if provider == PROVIDER_AUTO and has_key:
+            plain = _get_decrypted_api_key()
+            resolved_provider, _ = infer_provider(plain or "")
+            models = available_models_for_provider(resolved_provider)
+        else:
+            models = available_models_for_provider(provider)
+
         return SettingsDetailResponse(
             id=row.id,
             has_api_key=has_key,
             api_key_preview=preview,
+            api_provider=provider,
+            api_base_url=row.api_base_url or DEFAULT_MOONSHOT_BASE_URL,
             default_model=row.default_model,
-            available_models=AVAILABLE_MODELS,
+            available_models=models,
             temperature=row.temperature,
             max_tokens=row.max_tokens,
             theme=row.theme,
@@ -149,22 +227,27 @@ def get_settings():
 def update_settings(body: SettingUpdate):
     """更新配置，API Key 加密存储."""
     import backend.services.secrets as secrets_mod
+    from backend.services.kimi_client import reset_kimi_client
 
     db = SessionLocal()
     try:
         row = _ensure_settings_row(db)
 
-        # API Key 更新
         if body.api_key is not None:
             if body.api_key.strip():
                 row.api_key_encrypted = _encrypt_api_key(body.api_key.strip())
                 secrets_mod._cached_api_key = body.api_key.strip()
             else:
-                # 清空 API Key
                 row.api_key_encrypted = None
                 secrets_mod._cached_api_key = None
 
-        # 其他字段
+        if body.api_provider is not None:
+            p = body.api_provider.strip().lower()
+            row.api_provider = p if p in VALID_PROVIDERS else PROVIDER_AUTO
+
+        if body.api_base_url is not None:
+            row.api_base_url = body.api_base_url.strip() or None
+
         if body.default_model is not None:
             row.default_model = body.default_model
         if body.temperature is not None:
@@ -176,6 +259,7 @@ def update_settings(body: SettingUpdate):
 
         db.commit()
         db.refresh(row)
+        reset_kimi_client()
 
         has_key = bool(row.api_key_encrypted and len(row.api_key_encrypted) > 0)
         preview = ""
@@ -186,12 +270,22 @@ def update_settings(body: SettingUpdate):
             else:
                 preview = "********"
 
+        provider = row.api_provider or PROVIDER_AUTO
+        if provider == PROVIDER_AUTO and has_key:
+            plain = _get_decrypted_api_key()
+            resolved_provider, _ = infer_provider(plain or "")
+            models = available_models_for_provider(resolved_provider)
+        else:
+            models = available_models_for_provider(provider)
+
         return SettingsDetailResponse(
             id=row.id,
             has_api_key=has_key,
             api_key_preview=preview,
+            api_provider=provider,
+            api_base_url=row.api_base_url or DEFAULT_MOONSHOT_BASE_URL,
             default_model=row.default_model,
-            available_models=AVAILABLE_MODELS,
+            available_models=models,
             temperature=row.temperature,
             max_tokens=row.max_tokens,
             theme=row.theme,
@@ -208,42 +302,127 @@ def update_settings(body: SettingUpdate):
 
 @router.post("/test", response_model=ApiKeyTestResponse)
 async def test_api_key(body: ApiKeyTestRequest):
-    """测试 API Key 是否有效（调用 Kimi API 简单请求）."""
-    from openai import AsyncOpenAI
+    """测试 API Key 是否有效（按 provider 解析 endpoint 后请求）."""
+    from openai import APIStatusError, AsyncOpenAI
 
-    # 确定要测试的 key
     if body.api_key and body.api_key.strip():
         test_key = body.api_key.strip()
+        provider = (body.api_provider or PROVIDER_AUTO).strip().lower()
+        base_url_override = body.api_base_url
     else:
-        test_key = _get_decrypted_api_key()
-        if not test_key:
-            return ApiKeyTestResponse(valid=False, message="API Key 未配置")
+        db = SessionLocal()
+        try:
+            row = _ensure_settings_row(db)
+            test_key = _get_decrypted_api_key()
+            if not test_key:
+                return ApiKeyTestResponse(valid=False, message="API Key 未配置")
+            provider = body.api_provider or row.api_provider or PROVIDER_AUTO
+            base_url_override = body.api_base_url if body.api_base_url else row.api_base_url
+        finally:
+            db.close()
+
+    try:
+        cfg = resolve_api_config(
+            test_key,
+            api_provider=provider,
+            api_base_url=base_url_override,
+            api_model=None,
+        )
+    except ValueError as exc:
+        return ApiKeyTestResponse(valid=False, message=str(exc))
+
+    db = SessionLocal()
+    try:
+        row = _ensure_settings_row(db)
+        model = row.default_model or cfg.model
+    finally:
+        db.close()
 
     client = AsyncOpenAI(
-        api_key=test_key,
-        base_url=KIMI_BASE_URL,
+        api_key=cfg.api_key,
+        base_url=cfg.base_url,
         timeout=15.0,
         max_retries=0,
     )
 
     try:
         response = await client.chat.completions.create(
-            model=DEFAULT_MODEL,
+            model=model,
             messages=[{"role": "user", "content": "Hello, reply with just 'OK'."}],
             max_tokens=10,
             temperature=0,
         )
         content = response.choices[0].message.content or ""
-        if "OK" in content or len(content) > 0:
-            return ApiKeyTestResponse(valid=True, message="API Key 有效，连接正常")
-        return ApiKeyTestResponse(valid=True, message=f"API 响应正常: {content[:50]}")
+        msg = "API Key 有效，连接正常"
+        if cfg.provider == "kimi-coding":
+            msg = f"已连接至 Kimi For Coding（{cfg.base_url}）"
+        elif content:
+            msg = f"已连接至 {cfg.provider}（{cfg.base_url}）"
+        return ApiKeyTestResponse(
+            valid=True,
+            message=msg,
+            provider=cfg.provider,
+            base_url=cfg.base_url,
+        )
+    except APIStatusError as exc:
+        status = exc.status_code
+        body_text = str(exc.body) if exc.body else str(exc)
+        if status == 401:
+            hint = ""
+            if test_key.startswith("sk-kimi-") and "moonshot" in cfg.base_url:
+                hint = "（Key 为 Kimi Coding 类型，请切换 Provider 或 endpoint）"
+            return ApiKeyTestResponse(
+                valid=False,
+                message=f"API 认证失败{hint}",
+                provider=cfg.provider,
+                base_url=cfg.base_url,
+            )
+        if status == 403:
+            return ApiKeyTestResponse(
+                valid=False,
+                message=(
+                    "Key 已被识别，但当前客户端不在 Kimi For Coding 白名单内。"
+                    "请使用 Moonshot 平台 Key（sk- 开头，非 sk-kimi-）。"
+                    f" 响应: {body_text[:120]}"
+                ),
+                provider=cfg.provider,
+                base_url=cfg.base_url,
+            )
+        if status == 429:
+            return ApiKeyTestResponse(
+                valid=True,
+                message="API Key 有效但触发限流，请稍后重试",
+                provider=cfg.provider,
+                base_url=cfg.base_url,
+            )
+        return ApiKeyTestResponse(
+            valid=False,
+            message=f"连接失败 ({status}): {body_text[:200]}",
+            provider=cfg.provider,
+            base_url=cfg.base_url,
+        )
     except Exception as exc:
         msg = str(exc)
         if "401" in msg or "Unauthorized" in msg:
-            return ApiKeyTestResponse(valid=False, message="API Key 无效或已过期")
+            return ApiKeyTestResponse(
+                valid=False,
+                message="API 认证失败，请检查 Key 类型与 Provider 是否匹配",
+                provider=cfg.provider,
+                base_url=cfg.base_url,
+            )
         if "429" in msg:
-            return ApiKeyTestResponse(valid=True, message="API Key 有效但触发限流，请稍后重试")
-        return ApiKeyTestResponse(valid=False, message=f"连接失败: {msg[:200]}")
+            return ApiKeyTestResponse(
+                valid=True,
+                message="API Key 有效但触发限流，请稍后重试",
+                provider=cfg.provider,
+                base_url=cfg.base_url,
+            )
+        return ApiKeyTestResponse(
+            valid=False,
+            message=f"连接失败: {msg[:200]}",
+            provider=cfg.provider,
+            base_url=cfg.base_url,
+        )
 
 
 __all__ = ["router"]
