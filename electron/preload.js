@@ -22,4 +22,40 @@ contextBridge.exposeInMainWorld('electron', {
       callback(message);
     });
   },
+
+  // ── 自动更新 ──
+
+  /** 获取应用版本号 */
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+
+  /** 获取当前更新状态 */
+  getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
+
+  /** 手动检查更新 */
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+
+  /** 安装已下载的更新（重启应用） */
+  installUpdate: () => ipcRenderer.invoke('install-update'),
+
+  /** 监听更新状态变化（主进程推送） */
+  onUpdateStatus: (callback) => {
+    if (typeof callback !== 'function') return;
+    ipcRenderer.on('update-status', (_event, status) => {
+      callback(status);
+    });
+  },
+
+  /** 监听下载进度 */
+  onUpdateDownloadProgress: (callback) => {
+    if (typeof callback !== 'function') return;
+    ipcRenderer.on('update-download-progress', (_event, progress) => {
+      callback(progress);
+    });
+  },
+
+  /** 移除更新状态监听 */
+  removeUpdateStatusListeners: () => {
+    ipcRenderer.removeAllListeners('update-status');
+    ipcRenderer.removeAllListeners('update-download-progress');
+  },
 });

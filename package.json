@@ -30,23 +30,38 @@
       {
         "from": "dist/backend",
         "to": "backend",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
     "mac": {
-      "target": ["dmg"]
+      "target": [
+        "dmg"
+      ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "youthwei",
+      "repo": "ResearchAssistant",
+      "releaseType": "release"
     }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }
