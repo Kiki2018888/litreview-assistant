@@ -3,6 +3,7 @@ import Layout from "./components/Layout"
 import Literature from "./pages/Literature"
 import PaperWrite from "./pages/PaperWrite"
 import Settings from "./pages/Settings"
+import ChatHistory from "./pages/ChatHistory"
 import NotFound from "./pages/NotFound"
 
 export default function App() {
@@ -13,6 +14,7 @@ export default function App() {
           <Route path="/" element={<Literature />} />
           <Route path="/write" element={<PaperWrite />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/history" element={<ChatHistory />} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>

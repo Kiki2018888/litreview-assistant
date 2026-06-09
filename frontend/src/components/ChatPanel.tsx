@@ -35,6 +35,10 @@ interface ChatPanelProps {
   paperTitle?: string
   /** 关闭面板回调 */
   onClose: () => void
+  /** 继续对话：会话 ID */
+  sessionId?: string | null
+  /** 继续对话：历史消息 */
+  initialMessages?: Message[]
 }
 
 // ============================================================================
@@ -47,11 +51,13 @@ export default function ChatPanel({
   paperIds,
   paperTitle,
   onClose,
+  sessionId: initialSessionId = null,
+  initialMessages,
 }: ChatPanelProps) {
   // ── 对话状态 ──
-  const [messages, setMessages] = useState<Message[]>([])
+  const [messages, setMessages] = useState<Message[]>(initialMessages ?? [])
   const [input, setInput] = useState("")
-  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState<string | null>(initialSessionId)
 
   // ── 单篇模式：全文开关 ──
   const [useFulltext, setUseFulltext] = useState(false)

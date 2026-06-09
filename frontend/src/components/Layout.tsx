@@ -1,35 +1,8 @@
-import { useState, useEffect, useCallback } from "react"
 import { NavLink, Outlet, useLocation } from "react-router-dom"
 import type { LucideIcon } from "lucide-react"
-import { BookOpen, PenLine, Settings, Sun, Moon } from "lucide-react"
+import { BookOpen, PenLine, Settings, Sun, Moon, History } from "lucide-react"
 import { cn } from "../lib/utils"
-
-// ============================================================================
-// 暗色模式 Hook
-// ============================================================================
-
-function useDarkMode(): [boolean, () => void] {
-  const [dark, setDark] = useState<boolean>(() => {
-    const stored = localStorage.getItem("theme")
-    if (stored === "dark") return true
-    if (stored === "light") return false
-    return window.matchMedia("(prefers-color-scheme: dark)").matches
-  })
-
-  useEffect(() => {
-    const root = document.documentElement
-    if (dark) {
-      root.classList.add("dark")
-    } else {
-      root.classList.remove("dark")
-    }
-    localStorage.setItem("theme", dark ? "dark" : "light")
-  }, [dark])
-
-  const toggle = useCallback(() => setDark((prev) => !prev), [])
-
-  return [dark, toggle]
-}
+import { useDarkMode } from "../hooks/useDarkMode"
 
 // ============================================================================
 // 导航项定义
@@ -44,12 +17,14 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { path: "/", label: "文献库", icon: BookOpen },
   { path: "/write", label: "论文撰写", icon: PenLine },
+  { path: "/history", label: "会话历史", icon: History },
   { path: "/settings", label: "设置", icon: Settings },
 ]
 
 const PAGE_TITLES: Record<string, string> = {
   "/": "文献库",
   "/write": "论文撰写",
+  "/history": "会话历史",
   "/settings": "设置",
 }
 
