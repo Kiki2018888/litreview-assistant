@@ -1,4 +1,6 @@
-"""批次管理 API.
+"""批次管理 API（v1.0.1 遗留，v1.1.0 已废弃）.
+
+请使用 backend/api/v1/projects.py。本模块路由不再注册到 main.py。
 
 路由前缀: /api/v1/batches
 - POST   /              — 创建批次

@@ -40,7 +40,7 @@ class PaperBase(_ORMModel):
     journal: Optional[str] = None
     doi: Optional[str] = None
     status: PaperStatus = PaperStatus.PENDING
-    batch_id: Optional[str] = None
+    project_id: Optional[str] = None
     is_scanned: bool = False
     extraction_attempts: int = 0
     last_error: Optional[str] = None
@@ -62,7 +62,7 @@ class PaperUpdate(_ORMModel):
     journal: Optional[str] = None
     doi: Optional[str] = None
     status: Optional[PaperStatus] = None
-    batch_id: Optional[str] = None
+    project_id: Optional[str] = None
     is_scanned: Optional[bool] = None
     extraction_attempts: Optional[int] = None
     last_error: Optional[str] = None
@@ -161,29 +161,56 @@ class PaperBlocksResponse(_ORMModel):
 
 
 # ---------------------------------------------------------------------------
-# 5. batches
+# 5. projects（原 batches）
 # ---------------------------------------------------------------------------
 
 
-class BatchBase(_ORMModel):
+class ProjectBase(_ORMModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = None
     paper_count: int = 0
 
 
-class BatchCreate(BatchBase):
-    """创建批次请求."""
+class ProjectCreate(_ORMModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = None
 
 
-class BatchUpdate(_ORMModel):
+class ProjectUpdate(_ORMModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     description: Optional[str] = None
 
 
-class BatchResponse(BatchBase):
+class ProjectResponse(ProjectBase):
     id: str
+    is_default: bool = False
     created_at: datetime
     updated_at: datetime
+
+
+class ProjectDetailResponse(ProjectResponse):
+    paper_ids: list[str] = Field(default_factory=list)
+
+
+class MovePapersRequest(_ORMModel):
+    paper_ids: list[str] = Field(..., min_length=1)
+
+
+class MovePapersResponse(_ORMModel):
+    success: bool = True
+    moved_count: int = 0
+
+
+class ProjectDeleteResponse(_ORMModel):
+    success: bool = True
+    moved_count: int = 0
+
+
+# 向后兼容别名
+BatchBase = ProjectBase
+BatchCreate = ProjectCreate
+BatchUpdate = ProjectUpdate
+BatchResponse = ProjectResponse
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +251,8 @@ class PaperListItem(_ORMModel):
     journal: Optional[str] = None
     status: PaperStatus
     tags: list[str] = Field(default_factory=list)
-    batch_id: Optional[str] = None
+    project_id: Optional[str] = None
+    project_name: Optional[str] = None
     created_at: datetime
 
 
@@ -271,6 +299,12 @@ class TagSummaryResponse(_ORMModel):
     tags: list[TagSummaryItem]
 
 
+class ProjectStatsItem(_ORMModel):
+    project_id: str
+    project_name: str
+    count: int
+
+
 class PaperStatsResponse(_ORMModel):
     """文献统计响应."""
 
@@ -280,6 +314,26 @@ class PaperStatsResponse(_ORMModel):
     completed: int = 0
     failed: int = 0
     extract_failed: int = 0
+    by_project: list[ProjectStatsItem] = Field(default_factory=list)
+
+
+class BatchDeleteRequest(_ORMModel):
+    paper_ids: list[str] = Field(..., min_length=1)
+
+
+class BatchDeleteResponse(_ORMModel):
+    success: bool = True
+    deleted_count: int = 0
+
+
+class PaperProjectUpdateRequest(_ORMModel):
+    project_id: str
+
+
+class PaperProjectUpdateResponse(_ORMModel):
+    id: str
+    project_id: str
+    project_name: str
 
 
 class DeleteResponse(_ORMModel):

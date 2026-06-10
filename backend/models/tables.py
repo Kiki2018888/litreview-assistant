@@ -95,7 +95,7 @@ class Paper(Base):
         Index("ix_papers_title", "title"),
         Index("ix_papers_year", "year"),
         Index("ix_papers_status", "status"),
-        Index("ix_papers_batch_id", "batch_id"),
+        Index("ix_papers_project_id", "project_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid4)
@@ -112,9 +112,9 @@ class Paper(Base):
         nullable=False,
         default=PaperStatus.PENDING.value,
     )
-    batch_id: Mapped[Optional[str]] = mapped_column(
+    project_id: Mapped[Optional[str]] = mapped_column(
         String(36),
-        ForeignKey("batches.id", ondelete="SET NULL"),
+        ForeignKey("projects.id", ondelete="SET NULL"),
         nullable=True,
     )
     is_scanned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -175,6 +175,12 @@ class ExtractedData(Base):
         ForeignKey("papers.id", ondelete="CASCADE"),
         nullable=False,
     )
+    research_question: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    sample_source: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    sample_size: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    key_methods: Mapped[Optional[list[Any]]] = mapped_column(JSON, nullable=True)
+    key_data: Mapped[Optional[list[Any]]] = mapped_column(JSON, nullable=True)
+    limitations: Mapped[Optional[list[Any]]] = mapped_column(JSON, nullable=True)
     background: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     methods: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     key_results: Mapped[Optional[list[Any]]] = mapped_column(JSON, nullable=True)
@@ -210,25 +216,30 @@ class PaperBlock(Base):
 
 
 # ---------------------------------------------------------------------------
-# 5. batches — 文献批次
+# 5. projects — 科研项目（原 batches）
 # ---------------------------------------------------------------------------
 
 
-class Batch(Base):
-    """文献批次."""
+class Project(Base):
+    """科研项目分组."""
 
-    __tablename__ = "batches"
+    __tablename__ = "projects"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid4)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     paper_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
+
+
+# 向后兼容别名（逐步移除）
+Batch = Project
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +355,7 @@ __all__ = [
     "PaperPage",
     "ExtractedData",
     "PaperBlock",
+    "Project",
     "Batch",
     "PaperTag",
     "ChatSession",

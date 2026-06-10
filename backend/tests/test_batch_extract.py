@@ -17,7 +17,7 @@ from backend.tests.helpers import (
 )
 
 LIT = "/api/v1/literature"
-BATCHES = "/api/v1/batches"
+PROJECTS = "/api/v1/projects"
 
 
 @pytest.fixture
@@ -39,18 +39,18 @@ def _mock_json_response():
 
 
 class TestBatchExtract:
-    """POST /api/v1/batches/batch-extract."""
+    """POST /api/v1/projects/{id}/batch-extract."""
 
     def test_batch_extract_with_papers(self, client, db_session, mock_parse_pdf):
         """批量提取 SSE 进度流."""
-        r1 = client.post(f"{BATCHES}/", json={"name": "Extract Batch"})
-        batch_id = r1.json()["id"]
+        r1 = client.post(f"{PROJECTS}/", json={"name": "Extract Project"})
+        project_id = r1.json()["id"]
 
         for i in range(2):
             client.post(
                 f"{LIT}/upload",
                 files=[("files[]", (f"p{i}.pdf", BytesIO(b"%PDF-1.4"), "application/pdf"))],
-                data={"batch_id": batch_id},
+                data={"project_id": project_id},
             )
 
         mock_client = make_kimi_client_instance(
@@ -59,26 +59,19 @@ class TestBatchExtract:
 
         with patch("backend.api.v1.batch_extract.KimiClient", return_value=mock_client):
             with patch("asyncio.sleep", return_value=None):
-                resp = client.post(
-                    f"{BATCHES}/batch-extract",
-                    json={"batch_id": batch_id},
-                )
+                resp = client.post(f"{PROJECTS}/{project_id}/batch-extract")
                 assert resp.status_code == 200
                 content = resp.text
                 assert "data:" in content.lower()
 
-    def test_batch_extract_empty_batch(self, client, db_session):
-        """空批次或 batch_id 无效."""
-        resp = client.post(
-            f"{BATCHES}/batch-extract",
-            json={"batch_id": str(uuid.uuid4())},
-        )
-        assert resp.status_code in (200, 404)
+    def test_batch_extract_invalid_project(self, client, db_session):
+        """无效 project_id."""
+        resp = client.post(f"{PROJECTS}/{uuid.uuid4()}/batch-extract")
+        assert resp.status_code == 200
+        assert "error" in resp.text.lower() or "项目不存在" in resp.text
 
-    def test_batch_extract_no_pending(self, client, db_session, sample_batch):
-        """批次无 pending 文献."""
-        resp = client.post(
-            f"{BATCHES}/batch-extract",
-            json={"batch_id": sample_batch.id},
-        )
-        assert resp.status_code in (200, 404)
+    def test_batch_extract_no_pending(self, client, db_session, sample_project):
+        """项目无 pending 文献."""
+        resp = client.post(f"{PROJECTS}/{sample_project.id}/batch-extract")
+        assert resp.status_code == 200
+        assert "done" in resp.text.lower()

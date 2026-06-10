@@ -2,9 +2,9 @@
 
 路由前缀: /api/v1/literature
 路由顺序（固定路径 → 参数化路径）:
-  POST /upload  → GET /tags → GET /stats → GET /
+  POST /upload  → GET /tags → GET /stats → GET / → POST /batch-delete
   → POST /{id}/parse → GET /{id} → GET /{id}/pages
-  → GET /{id}/page/{page_num} → PUT /{id}/tags → DELETE /{id}
+  → GET /{id}/page/{page_num} → PUT /{id}/tags → PUT /{id}/project → DELETE /{id}
 """
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ from sqlalchemy.orm import Session
 
 from backend.config import MAX_UPLOAD_FILE_COUNT, MAX_UPLOAD_FILE_SIZE_MB, PDF_DIR
 from backend.models.schemas import (
+    BatchDeleteRequest,
+    BatchDeleteResponse,
     DeleteResponse,
     ExtractedDataResponse,
     ListResponse,
@@ -29,25 +31,33 @@ from backend.models.schemas import (
     PaperDetailResponse,
     PaperListItem,
     PaperParseResponse,
+    PaperProjectUpdateRequest,
+    PaperProjectUpdateResponse,
     PaperStatsResponse,
     PaperTagsUpdateRequest,
     PaperTagsUpdateResponse,
     PaperUploadResponse,
     PaperUploadResult,
+    ProjectStatsItem,
     TagSummaryItem,
     TagSummaryResponse,
 )
 from backend.models.tables import (
-    Batch,
     ChatSession,
     ExtractedData,
     Paper,
     PaperPage,
     PaperStatus,
     PaperTag,
+    Project,
 )
 from backend.services.db import get_db
 from backend.services.pdf_parser import PageInfo, ParsedPDF, parse_pdf
+from backend.services.project_service import (
+    adjust_project_paper_count,
+    move_paper_between_projects,
+    resolve_project_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +135,8 @@ def escape_fts_query(query: str) -> str:
 @router.post("/upload", response_model=PaperUploadResponse)
 async def upload_pdfs(
     files: list[UploadFile] = File(..., alias="files[]"),
-    batch_id: Optional[str] = Form(None),
+    project_id: Optional[str] = Form(None),
+    batch_id: Optional[str] = Form(None, deprecated=True),
     db: Session = Depends(get_db),
 ) -> PaperUploadResponse:
     """批量上传 PDF 文献.
@@ -157,11 +168,12 @@ async def upload_pdfs(
             )
         file_trios.append((f, content, size))
 
-    # -- 批次校验 --
-    if batch_id:
-        batch = db.get(Batch, batch_id)
-        if not batch:
-            raise HTTPException(status_code=404, detail="批次不存在")
+    # -- 项目解析（batch_id 为兼容别名） --
+    effective_project_id = project_id or batch_id
+    try:
+        resolved_project_id = resolve_project_id(db, effective_project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     # -- 确保保存目录 --
     PDF_DIR.mkdir(parents=True, exist_ok=True)
@@ -178,7 +190,7 @@ async def upload_pdfs(
             file_path=str(pdf_path),
             file_size=size,
             status=PaperStatus.PENDING.value,
-            batch_id=batch_id,
+            project_id=resolved_project_id,
         )
         db.add(paper)
         db.flush()
@@ -211,16 +223,7 @@ async def upload_pdfs(
             page_count=paper.page_count,
         ))
 
-    # 更新批次 paper_count
-    if batch_id:
-        db.execute(
-            text(
-                "UPDATE batches SET paper_count = paper_count + :c, "
-                "updated_at = datetime('now') WHERE id = :bid"
-            ),
-            {"c": len(file_trios), "bid": batch_id},
-        )
-
+    adjust_project_paper_count(db, resolved_project_id, len(file_trios))
     db.commit()
     return PaperUploadResponse(uploaded=results)
 
@@ -256,6 +259,13 @@ def get_stats(db: Session = Depends(get_db)) -> PaperStatsResponse:
         select(Paper.status, func.count(Paper.id)).group_by(Paper.status)
     ).all()
     counts = {row[0]: row[1] for row in rows}
+    by_project_rows = db.execute(
+        select(Project.id, Project.name, Project.is_default, func.count(Paper.id))
+        .outerjoin(Paper, Paper.project_id == Project.id)
+        .group_by(Project.id, Project.name, Project.is_default)
+        .order_by(Project.is_default.desc(), Project.name.asc())
+    ).all()
+
     return PaperStatsResponse(
         total=total,
         pending=counts.get("pending", 0),
@@ -263,6 +273,10 @@ def get_stats(db: Session = Depends(get_db)) -> PaperStatsResponse:
         completed=counts.get("completed", 0),
         failed=counts.get("failed", 0),
         extract_failed=counts.get("extract_failed", 0),
+        by_project=[
+            ProjectStatsItem(project_id=row[0], project_name=row[1], count=row[3])
+            for row in by_project_rows
+        ],
     )
 
 
@@ -277,6 +291,8 @@ def list_papers(
     tag: Optional[str] = Query(None, description="标签筛选"),
     year: Optional[int] = Query(None, description="年份筛选"),
     status: Optional[str] = Query(None, description="状态筛选"),
+    project_id: Optional[str] = Query(None, description="项目筛选"),
+    batch_id: Optional[str] = Query(None, deprecated=True, description="已废弃，请用 project_id"),
     sort: Optional[str] = Query(None, description="排序: year / time / title"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -325,6 +341,11 @@ def list_papers(
         stmt = stmt.where(Paper.status == status)
         count_stmt = count_stmt.where(Paper.status == status)
 
+    effective_project_id = project_id or batch_id
+    if effective_project_id:
+        stmt = stmt.where(Paper.project_id == effective_project_id)
+        count_stmt = count_stmt.where(Paper.project_id == effective_project_id)
+
     # ── 排序 ──
     if sort == "year":
         stmt = stmt.order_by(Paper.year.desc().nullslast(), Paper.title.asc())
@@ -338,8 +359,15 @@ def list_papers(
     offset = (page - 1) * page_size
     papers = db.execute(stmt.offset(offset).limit(page_size)).scalars().all()
 
-    # ── 批量加载标签 ──
+    # ── 批量加载标签与项目名 ──
     tags_map = _batch_load_tags(db, [p.id for p in papers])
+    project_ids = {p.project_id for p in papers if p.project_id}
+    project_names: dict[str, str] = {}
+    if project_ids:
+        rows = db.execute(
+            select(Project.id, Project.name).where(Project.id.in_(project_ids))
+        ).all()
+        project_names = {row[0]: row[1] for row in rows}
 
     items = [
         PaperListItem(
@@ -350,13 +378,28 @@ def list_papers(
             journal=p.journal,
             status=p.status,  # type: ignore[arg-type]
             tags=tags_map.get(p.id, []),
-            batch_id=p.batch_id,
+            project_id=p.project_id,
+            project_name=project_names.get(p.project_id) if p.project_id else None,
             created_at=p.created_at,  # type: ignore[arg-type]
         )
         for p in papers
     ]
 
     return ListResponse(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.post("/batch-delete", response_model=BatchDeleteResponse)
+def batch_delete_papers(
+    body: BatchDeleteRequest,
+    db: Session = Depends(get_db),
+) -> BatchDeleteResponse:
+    """批量删除文献（级联清理 PDF 与关联记录）."""
+    deleted = 0
+    for paper_id in body.paper_ids:
+        if _perform_paper_delete(db, paper_id):
+            deleted += 1
+    db.commit()
+    return BatchDeleteResponse(success=True, deleted_count=deleted)
 
 
 # ===================================================================
@@ -474,7 +517,7 @@ def get_paper_detail(
         journal=paper.journal,
         doi=paper.doi,
         status=paper.status,  # type: ignore[arg-type]
-        batch_id=paper.batch_id,
+        project_id=paper.project_id,
         is_scanned=paper.is_scanned,
         extraction_attempts=paper.extraction_attempts,
         last_error=paper.last_error,
@@ -584,8 +627,68 @@ def update_tags(
 
 
 # -------------------------------------------------------------------
+# 9.5 移动文献到项目
+# -------------------------------------------------------------------
+
+
+@router.put("/{paper_id}/project", response_model=PaperProjectUpdateResponse)
+def update_paper_project(
+    paper_id: str,
+    body: PaperProjectUpdateRequest,
+    db: Session = Depends(get_db),
+) -> PaperProjectUpdateResponse:
+    """将文献移动到指定项目."""
+    paper = db.get(Paper, paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="文献不存在")
+
+    target = db.get(Project, body.project_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    move_paper_between_projects(db, paper, target.id)
+    db.commit()
+
+    return PaperProjectUpdateResponse(
+        id=paper.id,
+        project_id=target.id,
+        project_name=target.name,
+    )
+
+
+# -------------------------------------------------------------------
 # 10. 删除文献
 # -------------------------------------------------------------------
+
+
+def _perform_paper_delete(db: Session, paper_id: str) -> bool:
+    """删除单篇文献，返回是否成功。不 commit。"""
+    paper = db.get(Paper, paper_id)
+    if not paper:
+        return False
+
+    pdf_path = paper.file_path
+    project_id = paper.project_id
+
+    db.delete(paper)
+
+    if project_id:
+        adjust_project_paper_count(db, project_id, -1)
+
+    sessions = db.query(ChatSession).filter(ChatSession.paper_ids.isnot(None)).all()
+    for session in sessions:
+        if session.paper_ids and paper_id in session.paper_ids:
+            session.paper_ids = [pid for pid in session.paper_ids if pid != paper_id]
+            if not session.paper_ids:
+                session.primary_paper_id = None
+
+    if pdf_path and os.path.isfile(pdf_path):
+        try:
+            os.remove(pdf_path)
+        except OSError as exc:
+            logger.warning("删除 PDF 文件失败 %s: %s", pdf_path, exc)
+
+    return True
 
 
 @router.delete("/{paper_id}", response_model=DeleteResponse)
@@ -593,44 +696,10 @@ def delete_paper(
     paper_id: str,
     db: Session = Depends(get_db),
 ) -> DeleteResponse:
-    """硬删除文献：DB 记录 + 本地 PDF + 批次计数减 1."""
-    paper = db.get(Paper, paper_id)
-    if not paper:
+    """硬删除文献：DB 记录 + 本地 PDF + 项目计数减 1."""
+    if not _perform_paper_delete(db, paper_id):
         raise HTTPException(status_code=404, detail="文献不存在")
-
-    pdf_path = paper.file_path
-    batch_id = paper.batch_id
-
-    db.delete(paper)  # CASCADE 自动处理 pages/extracted_data/tags
-
-    if batch_id:
-        db.execute(
-            text(
-                "UPDATE batches SET paper_count = MAX(0, paper_count - 1), "
-                "updated_at = datetime('now') WHERE id = :bid"
-            ),
-            {"bid": batch_id},
-        )
-
-    # 清理 chat_sessions 中的悬空引用
-    sessions = db.query(ChatSession).filter(
-        ChatSession.paper_ids.isnot(None)
-    ).all()
-    for session in sessions:
-        if session.paper_ids and paper_id in session.paper_ids:
-            session.paper_ids = [pid for pid in session.paper_ids if pid != paper_id]
-            if not session.paper_ids:
-                session.primary_paper_id = None
-
     db.commit()
-
-    # 物理删除 PDF 文件
-    if pdf_path and os.path.isfile(pdf_path):
-        try:
-            os.remove(pdf_path)
-        except OSError as exc:
-            logger.warning("删除 PDF 文件失败 %s: %s", pdf_path, exc)
-
     return DeleteResponse(success=True)
 
 

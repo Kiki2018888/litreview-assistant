@@ -16,19 +16,28 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _has_column(table: str, column: str) -> bool:
+    bind = op.get_bind()
+    rows = bind.execute(sa.text(f"PRAGMA table_info({table})")).fetchall()
+    return any(row[1] == column for row in rows)
+
+
 def upgrade() -> None:
-    with op.batch_alter_table("settings", schema=None) as batch_op:
-        batch_op.add_column(
-            sa.Column("api_provider", sa.String(32), nullable=False, server_default="auto")
-        )
-        batch_op.add_column(
-            sa.Column(
-                "api_base_url",
-                sa.String(500),
-                nullable=True,
-                server_default="https://api.moonshot.cn/v1",
+    if not _has_column("settings", "api_provider"):
+        with op.batch_alter_table("settings", schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column("api_provider", sa.String(32), nullable=False, server_default="auto")
             )
-        )
+    if not _has_column("settings", "api_base_url"):
+        with op.batch_alter_table("settings", schema=None) as batch_op:
+            batch_op.add_column(
+                sa.Column(
+                    "api_base_url",
+                    sa.String(500),
+                    nullable=True,
+                    server_default="https://api.moonshot.cn/v1",
+                )
+            )
 
 
 def downgrade() -> None:

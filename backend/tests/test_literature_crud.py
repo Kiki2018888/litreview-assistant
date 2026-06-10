@@ -58,7 +58,7 @@ class TestUpload:
         assert resp.status_code == 200
         paper_id = resp.json()["uploaded"][0]["id"]
         paper = db_session.query(Paper).filter(Paper.id == paper_id).first()
-        assert paper.batch_id == sample_batch.id
+        assert paper.project_id == sample_batch.id
 
     def test_upload_non_pdf_rejected(self, client, db_session):
         """非 PDF 文件拒绝."""

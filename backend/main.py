@@ -149,8 +149,9 @@ from backend.api.v1.literature_crud import router as literature_router
 from backend.api.v1.literature_chat import router as literature_chat_router
 from backend.api.v1.literature_extract import router as literature_extract_router
 from backend.api.v1.literature_translate import router as literature_translate_router
-from backend.api.v1.batch_extract import router as batch_extract_router
-from backend.api.v1.batches import router as batches_router
+from backend.api.v1.projects import router as projects_router
+# from backend.api.v1.batches import router as batches_router  # v1.1.0 已废弃
+# from backend.api.v1.batch_extract import router as batch_extract_router  # 已迁至 projects
 from backend.api.v1.settings import router as settings_router
 from backend.api.v1.data import router as data_router
 from backend.api.v1.chat_sessions import router as chat_sessions_router
@@ -161,9 +162,8 @@ app.include_router(literature_chat_router)
 app.include_router(literature_translate_router)
 app.include_router(literature_extract_router)
 app.include_router(literature_router)
-# /api/v1/batches — 批次管理 + 批量提取共享前缀
-app.include_router(batch_extract_router)
-app.include_router(batches_router)
+# /api/v1/projects — 项目管理 + 批量提取
+app.include_router(projects_router)
 # 独立前缀路由
 app.include_router(settings_router)
 app.include_router(data_router)

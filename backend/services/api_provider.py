@@ -81,7 +81,7 @@ def default_base_url_for_provider(provider: str) -> str:
 def default_model_for_provider(provider: str) -> str:
     """各 provider 的推荐默认模型."""
     if provider == PROVIDER_KIMI_CODING:
-        return "kimi-latest"
+        return "kimi-k2.6"
     if provider == PROVIDER_DEEPSEEK:
         return "deepseek-v4-pro"
     return "moonshot-v1-128k"

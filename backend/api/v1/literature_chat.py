@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.config import DEFAULT_MODEL, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS
 from backend.models.tables import (
-    Batch,
+    Project,
     ChatSession,
     ExtractedData,
     Paper,
@@ -51,7 +51,8 @@ class CrossLiteratureChatRequest(BaseModel):
 
     question: str = Field(..., min_length=1, description="用户提问")
     paper_ids: Optional[list[str]] = Field(None, description="文献 ID 列表")
-    batch_id: Optional[str] = Field(None, description="批次 ID（与 paper_ids 二选一）")
+    project_id: Optional[str] = Field(None, description="项目 ID（与 paper_ids 二选一）")
+    batch_id: Optional[str] = Field(None, description="已废弃，请用 project_id")
     session_id: Optional[str] = Field(None, description="会话 ID（追问用）")
 
 
@@ -196,21 +197,22 @@ async def cross_literature_chat(body: CrossLiteratureChatRequest, request: Reque
     追问时传入 session_id 可自动加载历史上下文。
     """
     # 参数校验
-    if body.paper_ids and body.batch_id:
-        raise HTTPException(status_code=400, detail="paper_ids 和 batch_id 只能选一个")
-    if not body.paper_ids and not body.batch_id:
-        raise HTTPException(status_code=400, detail="必须提供 paper_ids 或 batch_id")
+    effective_project_id = body.project_id or body.batch_id
+    if body.paper_ids and effective_project_id:
+        raise HTTPException(status_code=400, detail="paper_ids 和 project_id 只能选一个")
+    if not body.paper_ids and not effective_project_id:
+        raise HTTPException(status_code=400, detail="必须提供 paper_ids 或 project_id")
 
     # 解析文献 ID 列表
     db = SessionLocal()
     try:
-        if body.batch_id:
-            batch = db.query(Batch).filter(Batch.id == body.batch_id).first()
-            if not batch:
-                raise HTTPException(status_code=404, detail="批次不存在")
+        if effective_project_id:
+            project = db.query(Project).filter(Project.id == effective_project_id).first()
+            if not project:
+                raise HTTPException(status_code=404, detail="项目不存在")
             papers = (
                 db.query(Paper)
-                .filter(Paper.batch_id == body.batch_id)
+                .filter(Paper.project_id == effective_project_id)
                 .all()
             )
             paper_ids = [p.id for p in papers]

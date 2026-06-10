@@ -298,17 +298,38 @@ def sample_paper(db_session):
     return paper
 
 
-@pytest.fixture
-def sample_batch(db_session):
-    """在 DB 中创建一个测试批次."""
-    from backend.models.tables import Batch
+@pytest.fixture(autouse=True)
+def _ensure_default_project(db_session):
+    """每个测试确保存在默认「未分类」项目."""
+    from backend.services.project_service import get_default_project
 
-    bid = str(uuid.uuid4())
-    batch = Batch(id=bid, name="Test Batch", description="Batch for testing", paper_count=0)
-    db_session.add(batch)
+    get_default_project(db_session)
     db_session.commit()
-    db_session.refresh(batch)
-    return batch
+
+
+@pytest.fixture
+def sample_project(db_session):
+    """在 DB 中创建一个测试项目."""
+    from backend.models.tables import Project
+
+    pid = str(uuid.uuid4())
+    project = Project(
+        id=pid,
+        name="Test Project",
+        description="Project for testing",
+        paper_count=0,
+        is_default=False,
+    )
+    db_session.add(project)
+    db_session.commit()
+    db_session.refresh(project)
+    return project
+
+
+@pytest.fixture
+def sample_batch(sample_project):
+    """向后兼容：sample_batch 指向 sample_project."""
+    return sample_project
 
 
 @pytest.fixture

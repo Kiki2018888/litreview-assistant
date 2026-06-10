@@ -1,4 +1,4 @@
-"""批次管理 API 测试 —— CRUD / 文献关联 / 删除保留."""
+"""批次管理 API 测试 —— CRUD / 文献关联 / 删除保留（v1.0.1 遗留，已跳过）."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from io import BytesIO
 from unittest.mock import patch
 
 import pytest
+
+pytestmark = pytest.mark.skip(reason="batches API 已在 v1.1.0 由 projects 替代")
 
 from backend.tests.helpers import patch_upload_session_flush, run_sync_to_thread
 
