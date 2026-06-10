@@ -84,8 +84,16 @@ class Settings(BaseSettings):
 
     # ---- Kimi API ----
     kimi_base_url: str = "https://api.moonshot.cn/v1"
-    default_model: str = "moonshot-v1-8k"
-    available_models: list[str] = ["moonshot-v1-8k", "kimi-k2-5", "kimi-k2-6"]
+    default_model: str = "moonshot-v1-128k"
+    available_models: list[str] = [
+        "moonshot-v1-8k",
+        "moonshot-v1-32k",
+        "moonshot-v1-128k",
+        "kimi-k2.6",
+        "kimi-k2-6",
+    ]
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_default_model: str = "deepseek-v4-pro"
     default_temperature: float = 0.3
     default_max_tokens: int = 8192
     request_timeout: int = 120
@@ -132,6 +140,8 @@ RETRY_BASE_DELAY = settings.retry_base_delay
 SCANNED_PAGE_MIN_CHARS = settings.scanned_page_min_chars
 MAX_UPLOAD_FILE_SIZE_MB = settings.max_upload_file_size_mb
 MAX_UPLOAD_FILE_COUNT = settings.max_upload_file_count
+DEEPSEEK_BASE_URL = settings.deepseek_base_url
+DEEPSEEK_DEFAULT_MODEL = settings.deepseek_default_model
 
 __all__ = [
     # 路径
@@ -157,6 +167,8 @@ __all__ = [
     "SCANNED_PAGE_MIN_CHARS",
     "MAX_UPLOAD_FILE_SIZE_MB",
     "MAX_UPLOAD_FILE_COUNT",
+    "DEEPSEEK_BASE_URL",
+    "DEEPSEEK_DEFAULT_MODEL",
 ]
 
 # 项目根路径别名

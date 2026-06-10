@@ -11,20 +11,40 @@ from typing import Optional
 PROVIDER_AUTO = "auto"
 PROVIDER_MOONSHOT = "moonshot"
 PROVIDER_KIMI_CODING = "kimi-coding"
+PROVIDER_DEEPSEEK = "deepseek"
 PROVIDER_CUSTOM = "custom"
 
 VALID_PROVIDERS = frozenset(
-    {PROVIDER_AUTO, PROVIDER_MOONSHOT, PROVIDER_KIMI_CODING, PROVIDER_CUSTOM}
+    {
+        PROVIDER_AUTO,
+        PROVIDER_MOONSHOT,
+        PROVIDER_KIMI_CODING,
+        PROVIDER_DEEPSEEK,
+        PROVIDER_CUSTOM,
+    }
 )
 
 # 默认 endpoint（可扩展企业版/私有化时新增常量）
 DEFAULT_MOONSHOT_BASE_URL = "https://api.moonshot.cn/v1"
 DEFAULT_KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/v1"
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 # 各 Provider 推荐模型列表
-MOONSHOT_MODELS = ["kimi-k2-5", "kimi-k2-6", "moonshot-v1-8k"]
+MOONSHOT_MODELS = [
+    "moonshot-v1-8k",
+    "moonshot-v1-32k",
+    "moonshot-v1-128k",
+    "moonshot-v1-auto",
+    "kimi-k2.5",
+    "kimi-k2.6",
+    "kimi-k2-5",
+    "kimi-k2-6",
+]
 KIMI_CODING_MODELS = ["kimi-latest", "kimi-for-coding", "kimi-k2-6"]
-ALL_MODELS = list(dict.fromkeys(MOONSHOT_MODELS + KIMI_CODING_MODELS))
+DEEPSEEK_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"]
+ALL_MODELS = list(
+    dict.fromkeys(MOONSHOT_MODELS + KIMI_CODING_MODELS + DEEPSEEK_MODELS)
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +71,8 @@ def default_base_url_for_provider(provider: str) -> str:
     """固定 provider 的默认 endpoint."""
     if provider == PROVIDER_KIMI_CODING:
         return DEFAULT_KIMI_CODING_BASE_URL
+    if provider == PROVIDER_DEEPSEEK:
+        return DEFAULT_DEEPSEEK_BASE_URL
     if provider == PROVIDER_MOONSHOT:
         return DEFAULT_MOONSHOT_BASE_URL
     return DEFAULT_MOONSHOT_BASE_URL
@@ -60,13 +82,17 @@ def default_model_for_provider(provider: str) -> str:
     """各 provider 的推荐默认模型."""
     if provider == PROVIDER_KIMI_CODING:
         return "kimi-latest"
-    return "moonshot-v1-8k"
+    if provider == PROVIDER_DEEPSEEK:
+        return "deepseek-v4-pro"
+    return "moonshot-v1-128k"
 
 
 def available_models_for_provider(provider: str) -> list[str]:
     """按 provider 返回可选模型列表."""
     if provider == PROVIDER_KIMI_CODING:
         return KIMI_CODING_MODELS.copy()
+    if provider == PROVIDER_DEEPSEEK:
+        return DEEPSEEK_MODELS.copy()
     if provider == PROVIDER_MOONSHOT:
         return MOONSHOT_MODELS.copy()
     return ALL_MODELS.copy()
@@ -163,6 +189,7 @@ __all__ = [
     "PROVIDER_AUTO",
     "PROVIDER_MOONSHOT",
     "PROVIDER_KIMI_CODING",
+    "PROVIDER_DEEPSEEK",
     "PROVIDER_CUSTOM",
     "ResolvedApiConfig",
     "infer_provider",
@@ -173,4 +200,6 @@ __all__ = [
     "default_model_for_provider",
     "DEFAULT_MOONSHOT_BASE_URL",
     "DEFAULT_KIMI_CODING_BASE_URL",
+    "DEFAULT_DEEPSEEK_BASE_URL",
+    "DEEPSEEK_MODELS",
 ]

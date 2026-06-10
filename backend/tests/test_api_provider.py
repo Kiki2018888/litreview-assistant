@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from backend.services.api_provider import (
+    DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_KIMI_CODING_BASE_URL,
     DEFAULT_MOONSHOT_BASE_URL,
     PROVIDER_AUTO,
     PROVIDER_CUSTOM,
+    PROVIDER_DEEPSEEK,
     PROVIDER_KIMI_CODING,
     PROVIDER_MOONSHOT,
     infer_provider,
@@ -55,3 +57,9 @@ class TestResolveApiConfig:
             api_base_url=custom,
         )
         assert cfg.base_url == custom
+
+    def test_fixed_deepseek(self):
+        cfg = resolve_api_config("sk-moonshot-key", api_provider=PROVIDER_DEEPSEEK)
+        assert cfg.provider == PROVIDER_DEEPSEEK
+        assert cfg.base_url == DEFAULT_DEEPSEEK_BASE_URL
+        assert cfg.model == "deepseek-v4-pro"

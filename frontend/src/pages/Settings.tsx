@@ -40,6 +40,7 @@ import type { UpdateStatus } from "../types/electron"
 
 const MOONSHOT_BASE_URL = "https://api.moonshot.cn/v1"
 const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/v1"
+const DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 function inferProviderFromKey(key: string): {
   provider: ApiProvider
@@ -57,8 +58,15 @@ function inferProviderFromKey(key: string): {
 
 function defaultBaseUrlForProvider(provider: ApiProvider): string {
   if (provider === "kimi-coding") return KIMI_CODING_BASE_URL
+  if (provider === "deepseek") return DEEPSEEK_BASE_URL
   if (provider === "moonshot") return MOONSHOT_BASE_URL
   return MOONSHOT_BASE_URL
+}
+
+function defaultModelForProvider(provider: ApiProvider): string {
+  if (provider === "deepseek") return "deepseek-v4-pro"
+  if (provider === "kimi-coding") return "kimi-latest"
+  return "moonshot-v1-128k"
 }
 
 // ============================================================================
@@ -76,11 +84,12 @@ export default function SettingsPage() {
   const [apiProvider, setApiProvider] = useState<ApiProvider>("auto")
   const [apiBaseUrl, setApiBaseUrl] = useState(MOONSHOT_BASE_URL)
   const [testEndpoint, setTestEndpoint] = useState<string | null>(null)
-  const [model, setModel] = useState("moonshot-v1-8k")
+  const [model, setModel] = useState("moonshot-v1-128k")
   const [availableModels, setAvailableModels] = useState<string[]>([
+    "moonshot-v1-128k",
+    "moonshot-v1-32k",
     "moonshot-v1-8k",
-    "kimi-k2-5",
-    "kimi-k2-6",
+    "kimi-k2.6",
   ])
   const [temperature, setTemperature] = useState(0.3)
   const [maxTokens, setMaxTokens] = useState(8192)
@@ -250,8 +259,14 @@ export default function SettingsPage() {
       } else if (value !== "custom") {
         nextUrl = defaultBaseUrlForProvider(value)
       }
+      const nextModel = defaultModelForProvider(value)
       setApiBaseUrl(nextUrl)
-      debouncedSave({ api_provider: value, api_base_url: nextUrl })
+      setModel(nextModel)
+      debouncedSave({
+        api_provider: value,
+        api_base_url: nextUrl,
+        default_model: nextModel,
+      })
     },
     [apiKey, apiBaseUrl, debouncedSave]
   )
@@ -476,6 +491,7 @@ export default function SettingsPage() {
             >
               <option value="auto">自动识别（推荐）</option>
               <option value="moonshot">Moonshot 通用平台</option>
+              <option value="deepseek">DeepSeek</option>
               <option value="kimi-coding">Kimi For Coding</option>
               <option value="custom">自定义</option>
             </select>

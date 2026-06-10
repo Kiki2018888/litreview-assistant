@@ -169,7 +169,12 @@ export interface ChatSession {
 // ---------------------------------------------------------------------------
 
 /** SettingResponse — 设置响应（api_key 不返回明文） */
-export type ApiProvider = "auto" | "moonshot" | "kimi-coding" | "custom"
+export type ApiProvider =
+  | "auto"
+  | "moonshot"
+  | "kimi-coding"
+  | "deepseek"
+  | "custom"
 
 export interface Settings {
   id: number
