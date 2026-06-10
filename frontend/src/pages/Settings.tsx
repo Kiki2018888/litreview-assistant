@@ -76,8 +76,9 @@ export default function SettingsPage() {
   const [apiProvider, setApiProvider] = useState<ApiProvider>("auto")
   const [apiBaseUrl, setApiBaseUrl] = useState(MOONSHOT_BASE_URL)
   const [testEndpoint, setTestEndpoint] = useState<string | null>(null)
-  const [model, setModel] = useState("kimi-k2-6")
+  const [model, setModel] = useState("moonshot-v1-8k")
   const [availableModels, setAvailableModels] = useState<string[]>([
+    "moonshot-v1-8k",
     "kimi-k2-5",
     "kimi-k2-6",
   ])

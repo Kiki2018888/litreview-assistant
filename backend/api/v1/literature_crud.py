@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 import re
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -168,18 +169,19 @@ async def upload_pdfs(
     results: list[PaperUploadResult] = []
 
     for f, content, size in file_trios:
+        paper_id = str(uuid.uuid4())
+        pdf_path = PDF_DIR / f"{paper_id}.pdf"
+        pdf_path.write_bytes(content)
+
         paper = Paper(
+            id=paper_id,
+            file_path=str(pdf_path),
             file_size=size,
             status=PaperStatus.PENDING.value,
             batch_id=batch_id,
         )
         db.add(paper)
-        db.flush()  # 获取 UUID
-
-        # 保存 PDF 到磁盘
-        pdf_path = PDF_DIR / f"{paper.id}.pdf"
-        pdf_path.write_bytes(content)
-        paper.file_path = str(pdf_path)
+        db.flush()
 
         # 解析
         try:

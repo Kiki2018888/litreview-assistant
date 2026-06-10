@@ -84,8 +84,8 @@ class Settings(BaseSettings):
 
     # ---- Kimi API ----
     kimi_base_url: str = "https://api.moonshot.cn/v1"
-    default_model: str = "kimi-k2-6"
-    available_models: list[str] = ["kimi-k2-5", "kimi-k2-6"]
+    default_model: str = "moonshot-v1-8k"
+    available_models: list[str] = ["moonshot-v1-8k", "kimi-k2-5", "kimi-k2-6"]
     default_temperature: float = 0.3
     default_max_tokens: int = 8192
     request_timeout: int = 120

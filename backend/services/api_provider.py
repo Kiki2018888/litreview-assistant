@@ -60,7 +60,7 @@ def default_model_for_provider(provider: str) -> str:
     """各 provider 的推荐默认模型."""
     if provider == PROVIDER_KIMI_CODING:
         return "kimi-latest"
-    return "kimi-k2-6"
+    return "moonshot-v1-8k"
 
 
 def available_models_for_provider(provider: str) -> list[str]:

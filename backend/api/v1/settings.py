@@ -367,24 +367,20 @@ async def test_api_key(body: ApiKeyTestRequest):
     except APIStatusError as exc:
         status = exc.status_code
         body_text = str(exc.body) if exc.body else str(exc)
-        if status == 401:
-            hint = ""
-            if test_key.startswith("sk-kimi-") and "moonshot" in cfg.base_url:
-                hint = "（Key 为 Kimi Coding 类型，请切换 Provider 或 endpoint）"
+        if status in (401, 403):
             return ApiKeyTestResponse(
                 valid=False,
-                message=f"API 认证失败{hint}",
+                message="API Key 无效或已过期",
                 provider=cfg.provider,
                 base_url=cfg.base_url,
             )
-        if status == 403:
+        if status == 404 and (
+            "Not found the model" in body_text
+            or "resource_not_found_error" in body_text
+        ):
             return ApiKeyTestResponse(
                 valid=False,
-                message=(
-                    "Key 已被识别，但当前客户端不在 Kimi For Coding 白名单内。"
-                    "请使用 Moonshot 平台 Key（sk- 开头，非 sk-kimi-）。"
-                    f" 响应: {body_text[:120]}"
-                ),
+                message=f"当前账号无权使用模型 {model}，请更换模型后重试",
                 provider=cfg.provider,
                 base_url=cfg.base_url,
             )
@@ -403,10 +399,19 @@ async def test_api_key(body: ApiKeyTestRequest):
         )
     except Exception as exc:
         msg = str(exc)
-        if "401" in msg or "Unauthorized" in msg:
+        if "401" in msg or "403" in msg or "Unauthorized" in msg:
             return ApiKeyTestResponse(
                 valid=False,
-                message="API 认证失败，请检查 Key 类型与 Provider 是否匹配",
+                message="API Key 无效或已过期",
+                provider=cfg.provider,
+                base_url=cfg.base_url,
+            )
+        if "404" in msg and (
+            "Not found the model" in msg or "resource_not_found_error" in msg
+        ):
+            return ApiKeyTestResponse(
+                valid=False,
+                message=f"当前账号无权使用模型 {model}，请更换模型后重试",
                 provider=cfg.provider,
                 base_url=cfg.base_url,
             )
