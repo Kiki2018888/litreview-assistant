@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import {
   Search,
   ChevronLeft,
@@ -10,10 +10,29 @@ import {
   ArrowUpDown,
   MessageSquare,
   X,
+  MoreVertical,
+  Trash2,
 } from "lucide-react"
+import { toast } from "sonner"
 import { cn } from "../lib/utils"
-import { apiGet } from "../api/client"
-import type { PaperListItem, PaperListResponse, PaperStatus } from "../types"
+import { apiGet, apiDelete, apiPost } from "../api/client"
+import { Button } from "./ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "./ui/dialog"
+import type {
+  PaperListItem,
+  PaperListResponse,
+  PaperStatus,
+  Project,
+  BatchDeleteRequest,
+  BatchDeleteResponse,
+} from "../types"
 
 // ============================================================================
 // 常量
@@ -58,6 +77,14 @@ interface LiteratureListProps {
   onSelectPaper?: (paperId: string) => void
   /** 跨文献问答回调（多选后触发） */
   onChatMulti?: (paperIds: string[]) => void
+  /** 项目列表（用于筛选下拉） */
+  projects?: Project[]
+  /** 受控：当前项目筛选 ID（空字符串表示全部） */
+  projectFilter?: string
+  /** 项目筛选变化回调 */
+  onProjectFilterChange?: (projectId: string) => void
+  /** 删除成功后回调（刷新计数等） */
+  onDeleted?: () => void
 }
 
 // ============================================================================
@@ -70,6 +97,10 @@ export default function LiteratureList({
   onSelectionChange,
   onSelectPaper,
   onChatMulti,
+  projects,
+  projectFilter = "",
+  onProjectFilterChange,
+  onDeleted,
 }: LiteratureListProps) {
   // ── 数据状态 ──
   const [papers, setPapers] = useState<PaperListItem[]>([])
@@ -86,17 +117,23 @@ export default function LiteratureList({
   const [page, setPage] = useState(1)
   const [pageSize] = useState(20)
 
+  // ── 删除 ──
+  const [deleteTarget, setDeleteTarget] = useState<PaperListItem | null>(null)
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  // ── 行菜单 ──
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
   // ── 多选 ──
-  // 受控模式：使用 externalSelectedIds；非受控：使用内部 state
   const isControlled = externalSelectedIds !== undefined
   const [internalSelectedIds, setInternalSelectedIds] = useState<Set<string>>(new Set())
 
-  // 统一的选中集合
   const selectedSet = isControlled
     ? new Set(externalSelectedIds)
     : internalSelectedIds
 
-  // 通知父组件选择变化
   const notifySelection = useCallback(
     (ids: Set<string>) => {
       onSelectionChange?.(Array.from(ids))
@@ -104,11 +141,9 @@ export default function LiteratureList({
     [onSelectionChange]
   )
 
-  // 内部更新选中（非受控模式）
   const updateSelection = useCallback(
     (updater: (prev: Set<string>) => Set<string>) => {
       if (isControlled) {
-        // 受控模式：通知父组件，由父组件更新 props
         const current = new Set(externalSelectedIds)
         const next = updater(current)
         onSelectionChange?.(Array.from(next))
@@ -123,8 +158,6 @@ export default function LiteratureList({
     [isControlled, externalSelectedIds, onSelectionChange, notifySelection]
   )
 
-  // ── 翻页时清空选择 ──
-
   useEffect(() => {
     if (isControlled) {
       onSelectionChange?.([])
@@ -135,7 +168,17 @@ export default function LiteratureList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page])
 
-  // ── 数据获取 ──
+  // 点击外部关闭行菜单
+  useEffect(() => {
+    if (!menuOpenId) return
+    const handleClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpenId(null)
+      }
+    }
+    document.addEventListener("mousedown", handleClick)
+    return () => document.removeEventListener("mousedown", handleClick)
+  }, [menuOpenId])
 
   const fetchPapers = useCallback(async () => {
     setLoading(true)
@@ -149,6 +192,7 @@ export default function LiteratureList({
       if (statusFilter) params.set("status", statusFilter)
       if (sort) params.set("sort", sort)
       if (yearFilter) params.set("year", yearFilter)
+      if (projectFilter) params.set("project_id", projectFilter)
 
       const res = await apiGet<PaperListResponse>(
         `/literature/?${params.toString()}`
@@ -162,14 +206,12 @@ export default function LiteratureList({
     } finally {
       setLoading(false)
     }
-  }, [page, pageSize, search, statusFilter, sort, yearFilter])
+  }, [page, pageSize, search, statusFilter, sort, yearFilter, projectFilter])
 
-  // 首次加载 & 参数变化 & 外部刷新时重新获取
   useEffect(() => {
     fetchPapers()
   }, [fetchPapers, refreshKey])
 
-  // 搜索防抖：300ms 后执行
   useEffect(() => {
     const timer = setTimeout(() => {
       setSearch(searchInput)
@@ -178,13 +220,14 @@ export default function LiteratureList({
     return () => clearTimeout(timer)
   }, [searchInput])
 
-  // ── 分页计算 ──
+  // 项目筛选变化时回到第一页
+  useEffect(() => {
+    setPage(1)
+  }, [projectFilter])
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const hasPrev = page > 1
   const hasNext = page < totalPages
-
-  // ── 多选操作 ──
 
   const toggleSelect = useCallback(
     (id: string) => {
@@ -215,21 +258,53 @@ export default function LiteratureList({
     updateSelection(() => new Set())
   }, [updateSelection])
 
-  // ── 标题截断 ──
+  const handleDeleteSingle = useCallback(async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      await apiDelete(`/literature/${deleteTarget.id}`)
+      toast.success("文献已删除")
+      setDeleteTarget(null)
+      clearSelection()
+      await fetchPapers()
+      onDeleted?.()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "删除失败")
+    } finally {
+      setDeleting(false)
+    }
+  }, [deleteTarget, clearSelection, fetchPapers, onDeleted])
+
+  const handleDeleteBatch = useCallback(async () => {
+    const ids = Array.from(selectedSet)
+    if (ids.length === 0) return
+    setDeleting(true)
+    try {
+      const body: BatchDeleteRequest = { paper_ids: ids }
+      const res = await apiPost<BatchDeleteResponse>("/literature/batch-delete", body)
+      toast.success(`已删除 ${res.deleted_count} 篇文献`)
+      setBatchDeleteOpen(false)
+      clearSelection()
+      await fetchPapers()
+      onDeleted?.()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "批量删除失败")
+    } finally {
+      setDeleting(false)
+    }
+  }, [selectedSet, clearSelection, fetchPapers, onDeleted])
 
   const truncateTitle = (title: string | null, max = 80): string => {
     if (!title) return "（无标题）"
     return title.length > max ? title.slice(0, max) + "…" : title
   }
 
-  // 选中数
   const selectedCount = selectedSet.size
 
   return (
     <div className="space-y-3">
       {/* ── 搜索栏 + 操作区 ── */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* 搜索框 */}
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
@@ -241,7 +316,21 @@ export default function LiteratureList({
           />
         </div>
 
-        {/* 状态筛选 */}
+        {projects && projects.length > 0 && (
+          <select
+            value={projectFilter}
+            onChange={(e) => onProjectFilterChange?.(e.target.value)}
+            className="rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+          >
+            <option value="">全部项目</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.paper_count})
+              </option>
+            ))}
+          </select>
+        )}
+
         <select
           value={statusFilter}
           onChange={(e) => { setStatusFilter(e.target.value); setPage(1) }}
@@ -252,7 +341,6 @@ export default function LiteratureList({
           ))}
         </select>
 
-        {/* 年份筛选 */}
         <input
           type="number"
           value={yearFilter}
@@ -261,7 +349,6 @@ export default function LiteratureList({
           className="w-24 rounded-md border border-input bg-background px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-1 focus:ring-ring"
         />
 
-        {/* 排序 */}
         <select
           value={sort}
           onChange={(e) => { setSort(e.target.value); setPage(1) }}
@@ -272,7 +359,6 @@ export default function LiteratureList({
           ))}
         </select>
 
-        {/* 排序图标 */}
         <ArrowUpDown className="h-4 w-4 shrink-0 text-muted-foreground" />
       </div>
 
@@ -289,7 +375,13 @@ export default function LiteratureList({
           >
             <X className="h-3.5 w-3.5" />
           </button>
-          {/* 跨文献问答入口 */}
+          <button
+            onClick={() => setBatchDeleteOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-destructive/30 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            删除选中
+          </button>
           <button
             onClick={() => onChatMulti?.(Array.from(selectedSet))}
             className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
@@ -300,7 +392,6 @@ export default function LiteratureList({
         </div>
       )}
 
-      {/* ── 加载 / 错误 / 空状态 ── */}
       {loading && (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -322,7 +413,6 @@ export default function LiteratureList({
         </div>
       )}
 
-      {/* ── 文献表格 ── */}
       {!loading && !error && papers.length > 0 && (
         <>
           <div className="overflow-x-auto rounded-md border border-border">
@@ -339,11 +429,13 @@ export default function LiteratureList({
                     />
                   </th>
                   <th className="px-3 py-2.5 font-medium text-muted-foreground">标题</th>
+                  <th className="hidden w-28 px-3 py-2.5 font-medium text-muted-foreground md:table-cell">项目</th>
                   <th className="hidden px-3 py-2.5 font-medium text-muted-foreground md:table-cell">作者</th>
                   <th className="hidden w-16 px-3 py-2.5 font-medium text-muted-foreground sm:table-cell">年份</th>
                   <th className="hidden w-24 px-3 py-2.5 font-medium text-muted-foreground lg:table-cell">期刊</th>
                   <th className="w-24 px-3 py-2.5 font-medium text-muted-foreground">状态</th>
                   <th className="hidden w-32 px-3 py-2.5 font-medium text-muted-foreground xl:table-cell">标签</th>
+                  <th className="w-10 px-3 py-2.5" />
                 </tr>
               </thead>
               <tbody>
@@ -367,6 +459,11 @@ export default function LiteratureList({
                     <td className="max-w-[300px] px-3 py-2.5">
                       <span className="line-clamp-2 font-medium" title={paper.title ?? undefined}>
                         {truncateTitle(paper.title)}
+                      </span>
+                    </td>
+                    <td className="hidden px-3 py-2.5 text-muted-foreground md:table-cell">
+                      <span className="line-clamp-1 text-xs">
+                        {paper.project_name ?? "未分类"}
                       </span>
                     </td>
                     <td className="hidden px-3 py-2.5 text-muted-foreground md:table-cell">
@@ -409,13 +506,38 @@ export default function LiteratureList({
                         )}
                       </div>
                     </td>
+                    <td className="relative px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        onClick={() => setMenuOpenId(menuOpenId === paper.id ? null : paper.id)}
+                        className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                        title="更多操作"
+                      >
+                        <MoreVertical className="h-4 w-4" />
+                      </button>
+                      {menuOpenId === paper.id && (
+                        <div
+                          ref={menuRef}
+                          className="absolute right-2 top-full z-10 mt-1 min-w-[120px] rounded-md border border-border bg-popover py-1 shadow-md"
+                        >
+                          <button
+                            onClick={() => {
+                              setMenuOpenId(null)
+                              setDeleteTarget(paper)
+                            }}
+                            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            删除
+                          </button>
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
 
-          {/* ── 分页 ── */}
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted-foreground">
               共 {total} 篇 · 第 {page}/{totalPages} 页
@@ -446,7 +568,6 @@ export default function LiteratureList({
                 <ChevronLeft className="h-4 w-4" />
               </button>
 
-              {/* 页码 */}
               {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
                 let pageNum: number
                 if (totalPages <= 5) {
@@ -502,6 +623,46 @@ export default function LiteratureList({
           </div>
         </>
       )}
+
+      {/* ── 单篇删除确认 ── */}
+      <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent onClose={() => setDeleteTarget(null)} className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>确定删除？</DialogTitle>
+            <DialogDescription>
+              将永久删除「{truncateTitle(deleteTarget?.title ?? null, 40)}」，此操作不可撤销。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+              取消
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteSingle} disabled={deleting}>
+              {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : "确认删除"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── 批量删除确认 ── */}
+      <Dialog open={batchDeleteOpen} onOpenChange={setBatchDeleteOpen}>
+        <DialogContent onClose={() => setBatchDeleteOpen(false)} className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>确定删除？</DialogTitle>
+            <DialogDescription>
+              将永久删除选中的 {selectedCount} 篇文献，此操作不可撤销。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBatchDeleteOpen(false)} disabled={deleting}>
+              取消
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteBatch} disabled={deleting}>
+              {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : "确认删除"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

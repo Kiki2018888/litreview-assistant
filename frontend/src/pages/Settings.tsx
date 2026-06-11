@@ -65,7 +65,7 @@ function defaultBaseUrlForProvider(provider: ApiProvider): string {
 
 function defaultModelForProvider(provider: ApiProvider): string {
   if (provider === "deepseek") return "deepseek-v4-pro"
-  if (provider === "kimi-coding") return "kimi-latest"
+  if (provider === "kimi-coding") return "kimi-k2.6"
   return "moonshot-v1-128k"
 }
 

@@ -46,7 +46,7 @@ export interface Paper {
   journal: string | null
   doi: string | null
   status: PaperStatus
-  batch_id: string | null
+  project_id: string | null
   is_scanned: boolean
   extraction_attempts: number
   last_error: string | null
@@ -64,7 +64,8 @@ export interface PaperListItem {
   journal: string | null
   status: PaperStatus
   tags: string[]
-  batch_id: string | null
+  project_id: string | null
+  project_name: string | null
   created_at: string
 }
 
@@ -117,30 +118,47 @@ export interface ExtractedData {
 }
 
 // ---------------------------------------------------------------------------
-// Batch (batches 表)
+// Project (projects 表，原 batches)
 // ---------------------------------------------------------------------------
 
-/** BatchResponse — 批次响应 */
-export interface Batch {
+/** ProjectResponse — 项目响应 */
+export interface Project {
   id: string
   name: string
   description: string | null
   paper_count: number
+  is_default: boolean
   created_at: string
   updated_at: string
 }
 
-/** BatchCreate — 创建批次请求 */
-export interface BatchCreateRequest {
+/** ProjectDetailResponse — 项目详情（含文献 ID 列表） */
+export interface ProjectDetail extends Project {
+  paper_ids: string[]
+}
+
+/** ProjectCreate — 创建项目请求 */
+export interface ProjectCreateRequest {
   name: string
   description?: string | null
 }
 
-/** BatchUpdate — 更新批次请求 */
-export interface BatchUpdateRequest {
+/** ProjectUpdate — 更新项目请求 */
+export interface ProjectUpdateRequest {
   name?: string | null
   description?: string | null
 }
+
+/** ProjectDeleteResponse — 删除项目响应 */
+export interface ProjectDeleteResponse {
+  success: boolean
+  moved_count: number
+}
+
+/** 向后兼容别名（逐步移除） */
+export type Batch = Project
+export type BatchCreateRequest = ProjectCreateRequest
+export type BatchUpdateRequest = ProjectUpdateRequest
 
 // ---------------------------------------------------------------------------
 // ChatSession (chat_sessions 表)
@@ -250,8 +268,11 @@ export interface ListResponse<T> {
 /** PaperListResponse — 文献分页列表 */
 export type PaperListResponse = ListResponse<PaperListItem>
 
-/** BatchListResponse — 批次分页列表 */
-export type BatchListResponse = ListResponse<Batch>
+/** ProjectListResponse — 项目分页列表 */
+export type ProjectListResponse = ListResponse<Project>
+
+/** @deprecated 使用 ProjectListResponse */
+export type BatchListResponse = ProjectListResponse
 
 /** ChatSessionListResponse — 会话分页列表 */
 export type ChatSessionListResponse = ListResponse<ChatSession>
@@ -387,7 +408,7 @@ export interface BatchDoneEvent extends SSEEvent {
 export interface ChatRequest {
   question: string
   paper_ids?: string[]
-  batch_id?: string
+  project_id?: string
   session_id?: string
 }
 
@@ -398,7 +419,21 @@ export interface SingleChatRequest {
   use_fulltext?: boolean
 }
 
-/** 批量提取请求 */
-export interface BatchExtractRequest {
-  batch_id?: string | null
+/** 批量删除文献请求 */
+export interface BatchDeleteRequest {
+  paper_ids: string[]
 }
+
+/** 批量删除文献响应 */
+export interface BatchDeleteResponse {
+  success: boolean
+  deleted_count: number
+}
+
+/** 项目批量提取请求（路径参数指定 project_id，通常无需 body） */
+export interface ProjectExtractRequest {
+  project_id?: string | null
+}
+
+/** @deprecated 使用 ProjectExtractRequest */
+export type BatchExtractRequest = ProjectExtractRequest

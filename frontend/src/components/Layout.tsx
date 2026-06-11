@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom"
 import type { LucideIcon } from "lucide-react"
-import { BookOpen, PenLine, Settings, Sun, Moon, History } from "lucide-react"
+import { BookOpen, PenLine, Settings, Sun, Moon, History, FolderKanban } from "lucide-react"
 import { cn } from "../lib/utils"
 import { useDarkMode } from "../hooks/useDarkMode"
 
@@ -16,6 +16,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { path: "/", label: "文献库", icon: BookOpen },
+  { path: "/projects", label: "项目", icon: FolderKanban },
   { path: "/write", label: "论文撰写", icon: PenLine },
   { path: "/history", label: "会话历史", icon: History },
   { path: "/settings", label: "设置", icon: Settings },
@@ -23,6 +24,7 @@ const NAV_ITEMS: NavItem[] = [
 
 const PAGE_TITLES: Record<string, string> = {
   "/": "文献库",
+  "/projects": "项目",
   "/write": "论文撰写",
   "/history": "会话历史",
   "/settings": "设置",

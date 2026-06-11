@@ -3,7 +3,7 @@ import { Upload, X, FileText, Check, AlertCircle, Loader2 } from "lucide-react"
 import { toast } from "sonner"
 import { cn } from "../lib/utils"
 import { apiUpload } from "../api/client"
-import type { PaperUploadResponse, Batch } from "../types"
+import type { PaperUploadResponse, Project } from "../types"
 
 // ============================================================================
 // 常量
@@ -20,8 +20,8 @@ const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
 interface FileUploaderProps {
   /** 上传成功后回调，用于刷新列表 */
   onUploadComplete?: () => void
-  /** 可选批次列表（下拉选择） */
-  batches?: Batch[]
+  /** 可选项目列表（下拉选择目标项目） */
+  projects?: Project[]
 }
 
 // ============================================================================
@@ -39,24 +39,29 @@ interface UploadItem {
 // FileUploader 组件
 // ============================================================================
 
-export default function FileUploader({ onUploadComplete, batches }: FileUploaderProps) {
+export default function FileUploader({ onUploadComplete, projects }: FileUploaderProps) {
   const [items, setItems] = useState<UploadItem[]>([])
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
-  const [batchId, setBatchId] = useState<string>("")
+  const [projectId, setProjectId] = useState<string>("")
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // AbortController ref：组件卸载时取消进行中的上传
   const abortRef = useRef<AbortController | null>(null)
 
-  // 组件卸载清理
   useEffect(() => {
     return () => {
       abortRef.current?.abort()
     }
   }, [])
 
-  // ── 文件校验 ──
+  // 默认选中「未分类」项目
+  useEffect(() => {
+    if (!projects?.length || projectId) return
+    const defaultProject = projects.find((p) => p.is_default)
+    if (defaultProject) {
+      setProjectId(defaultProject.id)
+    }
+  }, [projects, projectId])
 
   const validateFiles = useCallback((files: FileList | File[]): { valid: File[]; rejected: string[] } => {
     const rejected: string[] = []
@@ -68,7 +73,6 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
       return { valid, rejected }
     }
 
-    // 按目录顺序截断，确保不超过 MAX_FILES
     let added = 0
     for (const f of files) {
       if (!f.name.toLowerCase().endsWith(".pdf")) {
@@ -90,11 +94,8 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
     return { valid, rejected }
   }, [items.length])
 
-  // ── 添加文件 ──
-
   const addFiles = useCallback((files: File[]) => {
     const { valid, rejected } = validateFiles(files)
-    // 单个 reject 用 toast；3+ 条合并为一条
     if (rejected.length === 1) {
       toast.error(rejected[0])
     } else if (rejected.length > 1) {
@@ -109,13 +110,9 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
     ])
   }, [validateFiles])
 
-  // ── 移除文件 ──
-
   const removeItem = useCallback((index: number) => {
     setItems((prev) => prev.filter((_, i) => i !== index))
   }, [])
-
-  // ── 拖拽事件 ──
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -138,34 +135,24 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
     }
   }, [addFiles])
 
-  // ── 文件选择 ──
-
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       addFiles(Array.from(e.target.files))
     }
-    // 重置 input，允许重复选择同名文件
     e.target.value = ""
   }, [addFiles])
-
-  // ── 开始上传 ──
 
   const handleUpload = useCallback(async () => {
     if (items.length === 0 || uploading) return
 
-    // 创建新的 AbortController
     abortRef.current = new AbortController()
-
     setUploading(true)
 
-    // 串行上传，逐个更新进度
     const updated = [...items]
     let successCount = 0
 
     for (let i = 0; i < updated.length; i++) {
-      // 检查是否已取消
       if (abortRef.current.signal.aborted) break
-
       if (updated[i].status === "done") continue
 
       updated[i] = { ...updated[i], status: "uploading" }
@@ -174,8 +161,8 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
       try {
         const formData = new FormData()
         formData.append("files[]", updated[i].file)
-        if (batchId) {
-          formData.append("batch_id", batchId)
+        if (projectId) {
+          formData.append("project_id", projectId)
         }
 
         const res = await apiUpload<PaperUploadResponse>(
@@ -194,9 +181,7 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
           updated[i] = { ...updated[i], status: "error", error: "服务器返回空结果" }
         }
       } catch (err) {
-        // 如果是被取消的，直接退出
         if (abortRef.current?.signal.aborted) break
-
         updated[i] = {
           ...updated[i],
           status: "error",
@@ -209,7 +194,6 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
     setUploading(false)
     abortRef.current = null
 
-    // 完成后 Toast 汇总
     if (successCount > 0) {
       toast.success(`成功上传 ${successCount} 篇文献`)
       onUploadComplete?.()
@@ -220,21 +204,16 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
         description: "请查看下方错误详情",
       })
     }
-  }, [items, uploading, batchId, onUploadComplete])
-
-  // ── 清空 ──
+  }, [items, uploading, projectId, onUploadComplete])
 
   const handleClear = useCallback(() => {
     if (uploading) return
     setItems([])
   }, [uploading])
 
-  // ── 统计 ──
-
   const doneCount = items.filter((i) => i.status === "done").length
   const errorCount = items.filter((i) => i.status === "error").length
   const progress = items.length > 0 ? Math.round(((doneCount + errorCount) / items.length) * 100) : 0
-  // 进度文案：显示当前正在上传第几个（解决进度条静止问题）
   const uploadingIndex = items.findIndex((i) => i.status === "uploading")
   const progressLabel =
     uploadingIndex >= 0
@@ -243,7 +222,6 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
 
   return (
     <div className="space-y-3">
-      {/* ── 拖拽区域 ── */}
       <div
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -273,29 +251,25 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
         </p>
       </div>
 
-      {/* ── 批次选择 ── */}
-      {batches && batches.length > 0 && (
+      {projects && projects.length > 0 && (
         <div className="flex items-center gap-2">
-          <label className="text-sm text-muted-foreground shrink-0">上传到批次：</label>
+          <label className="text-sm text-muted-foreground shrink-0">上传到项目：</label>
           <select
-            value={batchId}
-            onChange={(e) => setBatchId(e.target.value)}
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
             className="flex-1 rounded-md border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-ring focus:ring-1 focus:ring-ring"
           >
-            <option value="">（无批次）</option>
-            {batches.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name} ({b.paper_count})
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.paper_count})
               </option>
             ))}
           </select>
         </div>
       )}
 
-      {/* ── 文件列表 ── */}
       {items.length > 0 && (
         <div className="space-y-2">
-          {/* 头部统计 */}
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted-foreground">
               {items.length} 个文件
@@ -315,7 +289,6 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
             </div>
           </div>
 
-          {/* 进度条 */}
           {uploading && (
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
               <div
@@ -325,7 +298,6 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
             </div>
           )}
 
-          {/* 文件条目 */}
           <div className="max-h-48 space-y-1 overflow-y-auto">
             {items.map((item, idx) => (
               <div
@@ -336,7 +308,6 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
                   item.status === "done" && "bg-primary/5"
                 )}
               >
-                {/* 状态图标 */}
                 {item.status === "pending" && (
                   <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
                 )}
@@ -350,22 +321,18 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
                   <AlertCircle className="h-4 w-4 shrink-0 text-destructive" />
                 )}
 
-                {/* 文件名 */}
                 <span className="flex-1 truncate">{item.file.name}</span>
 
-                {/* 大小 */}
                 <span className="shrink-0 text-xs text-muted-foreground">
                   {(item.file.size / 1024 / 1024).toFixed(1)} MB
                 </span>
 
-                {/* 错误信息 */}
                 {item.status === "error" && (
                   <span className="shrink-0 text-xs text-destructive" title={item.error}>
                     {item.error}
                   </span>
                 )}
 
-                {/* 移除按钮 */}
                 {!uploading && (
                   <button
                     onClick={(e) => {
@@ -381,7 +348,6 @@ export default function FileUploader({ onUploadComplete, batches }: FileUploader
             ))}
           </div>
 
-          {/* 上传按钮 */}
           {!uploading && items.some((i) => i.status === "pending") && (
             <button
               onClick={handleUpload}

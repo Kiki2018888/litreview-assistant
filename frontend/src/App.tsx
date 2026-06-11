@@ -1,6 +1,7 @@
 import { HashRouter, Routes, Route } from "react-router-dom"
 import Layout from "./components/Layout"
 import Literature from "./pages/Literature"
+import Projects from "./pages/Projects"
 import PaperWrite from "./pages/PaperWrite"
 import Settings from "./pages/Settings"
 import ChatHistory from "./pages/ChatHistory"
@@ -12,6 +13,7 @@ export default function App() {
       <Routes>
         <Route element={<Layout />}>
           <Route path="/" element={<Literature />} />
+          <Route path="/projects" element={<Projects />} />
           <Route path="/write" element={<PaperWrite />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/history" element={<ChatHistory />} />
