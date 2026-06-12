@@ -56,7 +56,7 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "youthwei",
+      "owner": "Kiki2018888",
       "repo": "ResearchAssistant",
       "releaseType": "release"
     }
