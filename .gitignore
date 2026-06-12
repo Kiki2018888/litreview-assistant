@@ -68,6 +68,7 @@ out/
 .vscode/
 .codebuddy/
 指令生成RULES.md
+审阅报告.md
 *.swp
 *.swo
 *~
