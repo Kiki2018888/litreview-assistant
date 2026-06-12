@@ -102,6 +102,12 @@ def _save_extracted_data(
         .first()
     )
     if existing:
+        existing.research_question = data.get("research_question", "")
+        existing.sample_source = data.get("sample_source", "")
+        existing.sample_size = data.get("sample_size", "")
+        existing.key_methods = data.get("key_methods", [])
+        existing.key_data = data.get("key_data", [])
+        existing.limitations = data.get("limitations", [])
         existing.background = data.get("background", "")
         existing.methods = data.get("methods", "")
         existing.key_results = data.get("key_results", [])
@@ -115,6 +121,12 @@ def _save_extracted_data(
         record = ExtractedData(
             id=str(uuid.uuid4()),
             paper_id=paper_id,
+            research_question=data.get("research_question", ""),
+            sample_source=data.get("sample_source", ""),
+            sample_size=data.get("sample_size", ""),
+            key_methods=data.get("key_methods", []),
+            key_data=data.get("key_data", []),
+            limitations=data.get("limitations", []),
             background=data.get("background", ""),
             methods=data.get("methods", ""),
             key_results=data.get("key_results", []),

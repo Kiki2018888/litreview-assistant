@@ -104,6 +104,12 @@ class PaperPageResponse(PaperPageBase):
 
 
 class ExtractedDataBase(_ORMModel):
+    research_question: Optional[str] = None
+    sample_source: Optional[str] = None
+    sample_size: Optional[str] = None
+    key_methods: Optional[list[str]] = None
+    key_data: Optional[list[str]] = None
+    limitations: Optional[list[str]] = None
     background: Optional[str] = None
     methods: Optional[str] = None
     key_results: Optional[list[str]] = None
