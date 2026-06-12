@@ -29,6 +29,9 @@ httpx==0.27.0
 cryptography==42.0.7
 keyring==25.2.0
 
+# ---------- JSON Repair ----------
+json-repair==0.60.1
+
 # ---------- Utilities ----------
 aiofiles==23.2.1
 python-jose[cryptography]==3.3.0

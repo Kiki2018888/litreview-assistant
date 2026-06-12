@@ -30,11 +30,18 @@ def mock_parse_pdf(mock_parse_pdf):
 
 def _mock_json_response():
     return json.dumps({
+        "title": "Batch Test",
+        "research_question": "What is the effect?",
+        "sample_source": "Mouse model",
+        "sample_size": "n=10",
+        "key_methods": ["PCR", "Western blot"],
+        "key_data": ["Expression increased 2.5-fold (p<0.01)"],
+        "conclusion": "Conclusion",
+        "limitations": ["Small sample size"],
+        "keywords": ["k1", "k2"],
         "background": "BG",
         "methods": "Methods",
         "key_results": ["R1"],
-        "conclusion": "Conclusion",
-        "keywords": ["k1", "k2"],
     })
 
 

@@ -4,10 +4,11 @@
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.models.tables import BlockName, PaperStatus, SessionType
 
@@ -131,6 +132,72 @@ class ExtractedDataResponse(ExtractedDataBase):
     id: str
     paper_id: str
     extracted_at: Optional[datetime] = None
+
+
+# ---------------------------------------------------------------------------
+# 3a. ExtractedDataContract — 提取质量校验 Schema（ADR-2）
+# ---------------------------------------------------------------------------
+
+# 数值正则：容忍数字/百分比/p值/倍数/中文数字
+_NUMERIC_RE = re.compile(
+    r"(?x)"
+    r"\d[\d,.]*(?:e[+-]?\d+)?"   # 数字（小数、千分位、科学计数法）
+    r"|"
+    r"[零一二三四五六七八九十百千万亿]+"  # 中文数字
+    r"|"
+    r"p\s*[<≤>=≈]\s*0?\.\d+"     # p值
+    r"|"
+    r"[%％倍]"                     # 百分比/单位/倍数后缀
+)
+
+
+class ExtractedDataContract(BaseModel):
+    """提取质量契约 Schema（ADR-2）.
+
+    用于校验 API 返回的 JSON 是否满足最低质量要求。
+    与 ExtractedData 表字段对应，但不要求 ORM 兼容。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    title: str = Field(default="")
+    authors: list[str] = Field(default_factory=list)
+    year: Optional[int] = None
+    journal: Optional[str] = None
+    research_question: str = Field(..., min_length=1)
+    sample_source: str = Field(..., min_length=1)
+    sample_size: Optional[str] = ""
+    key_methods: list[str] = Field(default_factory=list)
+    key_data: list[str] = Field(default_factory=list)
+    conclusion: str = Field(..., min_length=1)
+    limitations: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    # 兼容旧字段
+    background: Optional[str] = ""
+    methods: Optional[str] = ""
+    key_results: list[str] = Field(default_factory=list)
+
+    @field_validator("key_data")
+    @classmethod
+    def _key_data_has_numeric(cls, v: list[str]) -> list[str]:
+        """key_data 至少 1 条，且每条含具体数值."""
+        if len(v) < 1:
+            raise ValueError("key_data 至少需要 1 条核心数据")
+        for i, item in enumerate(v):
+            if not _NUMERIC_RE.search(item):
+                raise ValueError(
+                    f"key_data[{i}] 缺少具体数值/指标: '{item}'。"
+                    "禁止'显著增加'等模糊表述，请补充具体数字。"
+                )
+        return v
+
+    @field_validator("limitations")
+    @classmethod
+    def _limitations_at_least_one(cls, v: list[str]) -> list[str]:
+        """limitations 至少 1 条."""
+        if len(v) < 1:
+            raise ValueError("limitations 至少需要 1 条研究局限性")
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +543,7 @@ __all__ = [
     "ExtractedDataCreate",
     "ExtractedDataUpdate",
     "ExtractedDataResponse",
+    "ExtractedDataContract",
     # 4. paper_blocks
     "PaperBlockBase",
     "PaperBlockCreate",

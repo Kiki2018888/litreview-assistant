@@ -15,17 +15,23 @@ LIT = "/api/v1/literature"
 
 
 def _mock_extract_response():
-    """返回符合 SPEC 的 JSON Mode 提取结果."""
+    """返回符合 SPEC 的 JSON Mode 提取结果（含 ADR-2 质量契约要求的新字段）."""
     return json.dumps({
         "title": "Extracted Title",
         "authors": ["Author A"],
         "year": 2024,
         "journal": "Test Journal",
+        "research_question": "How does X affect Y?",
+        "sample_source": "Human plasma exosomes",
+        "sample_size": "n=30",
+        "key_methods": ["Mass spectrometry", "Flow cytometry"],
+        "key_data": ["X improved by 30% (p<0.01)", "Y decreased by 15%"],
+        "conclusion": "The results demonstrate that...",
+        "limitations": ["Only in vitro experiments"],
+        "keywords": ["machine learning", "nlp", "transformer"],
         "background": "This research addresses...",
         "methods": "We conducted experiments using...",
         "key_results": ["Finding 1: X improved by 30%", "Finding 2: Y decreased by 15%"],
-        "conclusion": "The results demonstrate that...",
-        "keywords": ["machine learning", "nlp", "transformer"],
     })
 
 

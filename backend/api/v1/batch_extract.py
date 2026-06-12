@@ -2,6 +2,8 @@
 
 v1.1.0: 路由挂载在 POST /api/v1/projects/{id}/batch-extract。
 原 /api/v1/batches/batch-extract 已废弃。
+
+ADR-2: 每篇文献独立走 parse_and_validate + 修复循环。
 """
 from __future__ import annotations
 
@@ -13,12 +15,21 @@ from datetime import datetime
 from typing import AsyncIterator, Optional
 
 from fastapi import HTTPException, Request
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session
 
 from backend.config import DEFAULT_MODEL, DEFAULT_TEMPERATURE, MAX_RETRIES, RETRY_BASE_DELAY
 from backend.models.tables import ExtractedData, Paper, PaperPage, PaperStatus, Project
 from backend.services.db import SessionLocal
 from backend.services.extract_prompt import build_extract_prompt
+from backend.services.extract_service import (
+    JSONParseError,
+    ParseResult,
+    _MAX_REPAIR_ATTEMPTS,
+    _extract_validation_errors,
+    build_repair_prompt,
+    parse_and_validate,
+)
 from backend.services.kimi_client import KimiClient
 
 logger = logging.getLogger(__name__)
@@ -37,32 +48,8 @@ def _get_full_text(db: Session, paper_id: str) -> str:
     return "\n\n".join(p.text_content for p in pages if p.text_content)
 
 
-def _parse_extracted_json(raw_json: str) -> dict:
-    import json as _json
-
-    text = raw_json.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines)
-    try:
-        data = _json.loads(text)
-    except _json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1:
-            data = _json.loads(text[start : end + 1])
-        else:
-            raise ValueError("AI 返回无法解析为 JSON")
-    if not isinstance(data, dict):
-        raise ValueError("AI 返回 JSON 格式不正确")
-    return data
-
-
-def _save_extracted(db: Session, paper_id: str, data: dict) -> None:
+def _save_extracted(db: Session, paper_id: str, parse_result: ParseResult) -> None:
+    data = parse_result.data
     existing = db.query(ExtractedData).filter(ExtractedData.paper_id == paper_id).first()
     fields = {
         "research_question": data.get("research_question", ""),
@@ -243,12 +230,40 @@ async def stream_project_batch_extract(
         if not extract_ok and last_error:
             full_response = str(last_error)
 
+        # ── 解析 + 校验 + 修复循环（ADR-2 质量契约）──
+        parse_result = None
+        repair_errors: list[str] = []
+
         if extract_ok:
             try:
-                extracted = _parse_extracted_json(full_response)
-            except ValueError as e:
-                extract_ok = False
-                full_response = str(e)
+                parse_result = parse_and_validate(full_response)
+            except (JSONParseError, PydanticValidationError) as e:
+                repair_errors = _extract_validation_errors(e)
+
+            # 修复循环
+            repair_attempt = 0
+            while parse_result is None and repair_attempt < _MAX_REPAIR_ATTEMPTS:
+                repair_attempt += 1
+                if await request.is_disconnected():
+                    break
+
+                repair_prompt = build_repair_prompt(full_text, repair_errors)
+                try:
+                    completion = await client._client.chat.completions.create(
+                        model=DEFAULT_MODEL,
+                        messages=[{"role": "user", "content": repair_prompt}],
+                        temperature=DEFAULT_TEMPERATURE,
+                        max_tokens=_EXTRACT_MAX_TOKENS,
+                        response_format={"type": "json_object"},
+                    )
+                    repair_response = completion.choices[0].message.content or ""
+                except Exception:
+                    continue
+
+                try:
+                    parse_result = parse_and_validate(repair_response)
+                except (JSONParseError, PydanticValidationError) as e:
+                    repair_errors = _extract_validation_errors(e)
 
         db_res = SessionLocal()
         try:
@@ -256,11 +271,12 @@ async def stream_project_batch_extract(
             if not p:
                 continue
 
-            if extract_ok:
+            if parse_result is not None:
+                extracted = parse_result.data
                 p.status = PaperStatus.COMPLETED.value
                 p.extracted_at = datetime.utcnow()
                 p.last_error = None
-                _save_extracted(db_res, paper_id, extracted)
+                _save_extracted(db_res, paper_id, parse_result)
                 if extracted.get("title") and not p.title:
                     p.title = extracted["title"]
                 if extracted.get("authors") and not p.authors:
@@ -281,11 +297,19 @@ async def stream_project_batch_extract(
                 })
             else:
                 attempts = p.extraction_attempts or 0
-                if attempts >= MAX_RETRIES:
+                if extract_ok and repair_errors:
+                    # API 调用成功但质量不达标
                     p.status = PaperStatus.EXTRACT_FAILED.value
+                    p.last_error = (
+                        f"质量校验失败（修复{_MAX_REPAIR_ATTEMPTS}次）: "
+                        + "; ".join(repair_errors[:5])
+                    )[:500]
+                elif attempts >= MAX_RETRIES:
+                    p.status = PaperStatus.EXTRACT_FAILED.value
+                    p.last_error = (full_response or "未知错误")[:500]
                 else:
                     p.status = PaperStatus.PENDING.value
-                p.last_error = (full_response or "未知错误")[:500]
+                    p.last_error = (full_response or "未知错误")[:500]
                 db_res.commit()
                 fail_count += 1
                 yield _sse_msg({
@@ -295,7 +319,7 @@ async def stream_project_batch_extract(
                     "paper_id": paper_id,
                     "status": "failed",
                     "title": display_title,
-                    "error": p.last_error[:200],
+                    "error": (p.last_error or "未知错误")[:200],
                 })
         finally:
             db_res.close()

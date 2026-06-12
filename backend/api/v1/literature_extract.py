@@ -2,6 +2,9 @@
 
 路由: POST /api/v1/literature/{paper_id}/extract
 使用 Kimi API JSON Mode 从全文提取结构化摘要，SSE 流式响应。
+
+ADR-2: 提取结果必须通过 Pydantic 质量契约（parse_and_validate），
+否则走修复循环；仅通过后才置 completed。
 """
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session
 
 from backend.config import DEFAULT_MODEL, DEFAULT_TEMPERATURE, MAX_RETRIES, RETRY_BASE_DELAY
@@ -21,6 +25,14 @@ from backend.models.schemas import PaperParseResponse
 from backend.models.tables import ExtractedData, Paper, PaperPage, PaperStatus
 from backend.services.db import SessionLocal
 from backend.services.extract_prompt import build_extract_prompt
+from backend.services.extract_service import (
+    JSONParseError,
+    ParseResult,
+    _MAX_REPAIR_ATTEMPTS,
+    _extract_validation_errors,
+    build_repair_prompt,
+    parse_and_validate,
+)
 from backend.services.kimi_client import KimiClient
 
 logger = logging.getLogger(__name__)
@@ -54,48 +66,13 @@ def _get_full_text(db: Session, paper_id: str) -> str:
     return "\n\n".join(parts)
 
 
-def _parse_extracted_json(raw_json: str) -> dict:
-    """从 Kimi JSON Mode 返回的字符串中解析 JSON.
-
-    处理常见的格式问题：前后空格、markdown 代码块包裹。
-    """
-    text = raw_json.strip()
-    # 移除可能的 markdown 代码块标记
-    if text.startswith("```"):
-        # 找到第一个换行后和最后一个 ``` 之前
-        lines = text.split("\n")
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines)
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        # 尝试提取第一个 { 到最后一个 } 之间的内容
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            try:
-                data = json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
-                raise ValueError("AI 返回内容无法解析为 JSON，请重试")
-        else:
-            raise ValueError("AI 返回内容无法解析为 JSON，请重试")
-
-    if not isinstance(data, dict):
-        raise ValueError("AI 返回的 JSON 格式不正确")
-
-    return data
-
-
 def _save_extracted_data(
     db: Session,
     paper_id: str,
-    data: dict,
+    parse_result: ParseResult,
 ) -> ExtractedData:
     """将提取结果存入 extracted_data 表（upsert 逻辑）."""
+    data = parse_result.data
     existing = (
         db.query(ExtractedData)
         .filter(ExtractedData.paper_id == paper_id)
@@ -304,35 +281,86 @@ async def _do_extract(paper_id: str, request: Request) -> StreamingResponse:
             yield _sse_msg({"type": "done"})
             return
 
-        # ── 解析 JSON ──
+        # ── 解析 + 校验 + 修复循环（ADR-2 质量契约）──
+        parse_result = None
+        repair_errors: list[str] = []
+
+        # 首次解析
         try:
-            extracted = _parse_extracted_json(full_response)
-        except ValueError as e:
-            logger.warning("JSON 解析失败 paper_id=%s: %s", paper_id, e)
+            parse_result = parse_and_validate(full_response)
+        except (JSONParseError, PydanticValidationError) as e:
+            repair_errors = _extract_validation_errors(e)
+            logger.warning(
+                "首次校验失败 paper_id=%s: %s", paper_id, "; ".join(repair_errors[:3])
+            )
+
+        # 修复循环
+        repair_attempt = 0
+        while parse_result is None and repair_attempt < _MAX_REPAIR_ATTEMPTS:
+            repair_attempt += 1
+            if await request.is_disconnected():
+                _rollback_extracting(paper_id)
+                yield _sse_msg({"type": "cancelled", "message": "客户端已断开"})
+                yield _sse_msg({"type": "done"})
+                return
+
+            yield _sse_msg({
+                "type": "repair",
+                "attempt": repair_attempt,
+                "max_repairs": _MAX_REPAIR_ATTEMPTS,
+                "errors": repair_errors[:5],
+            })
+
+            repair_prompt = build_repair_prompt(full_text, repair_errors)
+            try:
+                completion = await client._client.chat.completions.create(
+                    model=DEFAULT_MODEL,
+                    messages=[{"role": "user", "content": repair_prompt}],
+                    temperature=DEFAULT_TEMPERATURE,
+                    max_tokens=_EXTRACT_MAX_TOKENS,
+                    response_format={"type": "json_object"},
+                )
+                repair_response = completion.choices[0].message.content or ""
+            except Exception as repair_exc:
+                logger.warning("修复调用失败 paper_id=%s: %s", paper_id, repair_exc)
+                repair_errors = [f"修复 API 调用失败: {repair_exc}"]
+                continue
+
+            try:
+                parse_result = parse_and_validate(repair_response)
+            except (JSONParseError, PydanticValidationError) as e:
+                repair_errors = _extract_validation_errors(e)
+                logger.warning(
+                    "修复校验失败 paper_id=%s (第%d次): %s",
+                    paper_id, repair_attempt, "; ".join(repair_errors[:3])
+                )
+
+        # ── 失败处理（修复循环耗尽）──
+        if parse_result is None:
             db_fail2 = SessionLocal()
             try:
                 p = db_fail2.query(Paper).filter(Paper.id == paper_id).first()
                 if p:
-                    if attempts >= MAX_RETRIES:
-                        p.status = PaperStatus.EXTRACT_FAILED.value
-                        p.last_error = f"JSON 解析失败: {str(e)}"
-                    else:
-                        p.status = PaperStatus.PENDING.value
-                        p.last_error = f"JSON 解析失败: {str(e)}"
+                    p.status = PaperStatus.EXTRACT_FAILED.value
+                    p.last_error = (
+                        f"质量校验失败（修复{_MAX_REPAIR_ATTEMPTS}次后仍不达标）: "
+                        + "; ".join(repair_errors[:5])
+                    )[:500]
                     db_fail2.commit()
             finally:
                 db_fail2.close()
 
             yield _sse_msg({
                 "type": "error",
-                "code": "EXTRACT_JSON_PARSE_ERROR",
-                "message": str(e),
+                "code": "EXTRACT_QUALITY_FAILED",
+                "message": f"提取质量不达标（已修复{_MAX_REPAIR_ATTEMPTS}次）: {'; '.join(repair_errors[:3])}",
                 "attempt": attempts,
             })
             yield _sse_msg({"type": "done"})
             return
 
         # ── 保存结果（同一事务：状态 + extracted_data + 元数据 → 一次 commit）──
+        extracted = parse_result.data
         db_save = SessionLocal()
         try:
             p = db_save.query(Paper).filter(Paper.id == paper_id).first()
@@ -354,7 +382,7 @@ async def _do_extract(paper_id: str, request: Request) -> StreamingResponse:
             if extracted.get("journal") and not p.journal:
                 p.journal = extracted["journal"]
 
-            _save_extracted_data(db_save, paper_id, extracted)
+            _save_extracted_data(db_save, paper_id, parse_result)
             db_save.commit()
         finally:
             db_save.close()
