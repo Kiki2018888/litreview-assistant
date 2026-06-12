@@ -94,6 +94,19 @@ async def lifespan(app: FastAPI):
     # 首次运行自动建表
     _run_migrations()
 
+    # 启动重置：将异常中断卡在 extracting 的文献回退到 pending
+    from backend.models.tables import Paper, PaperStatus
+    from backend.services.db import SessionLocal
+
+    with SessionLocal() as db:
+        zombies = db.query(Paper).filter(Paper.status == PaperStatus.EXTRACTING.value).all()
+        for p in zombies:
+            p.status = PaperStatus.PENDING.value
+            p.last_error = "服务重启，提取中断"
+        if zombies:
+            db.commit()
+            logger.info("启动重置：%d 篇 extracting → pending", len(zombies))
+
     yield
     # 关闭：无额外清理
     logger.info("ResearchAssistant 关闭")
