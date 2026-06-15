@@ -78,6 +78,43 @@ class BlockName(str, Enum):
     DISCUSSION = "discussion"
 
 
+class ClaimForm(str, Enum):
+    """论断形态."""
+    EFFECT = "effect"
+    STATE = "state"
+    CHARACTERIZATION = "characterization"
+    COMPARISON = "comparison"
+
+
+class Topic(str, Enum):
+    """论断主题."""
+    EFFICACY = "efficacy"
+    SAFETY = "safety"
+    MANUFACTURING = "manufacturing"
+    MECHANISM = "mechanism"
+    OTHER = "other"
+
+
+class Direction(str, Enum):
+    """效应方向（仅 claim_form=effect 时应有值，条件必填由 Pydantic 校验）."""
+    UP = "up"
+    DOWN = "down"
+    NONE = "none"
+
+
+class ComparisonResult(str, Enum):
+    """比较结果（仅 claim_form=comparison 时应有值，条件必填由 Pydantic 校验）."""
+    SIMILAR = "similar"
+    SUPERIOR = "superior"
+    INFERIOR = "inferior"
+
+
+class ExtractionSource(str, Enum):
+    """提取来源."""
+    MODEL = "model"
+    HUMAN_VERIFIED = "human_verified"
+
+
 # ---------------------------------------------------------------------------
 # 1. papers — 文献元数据
 # ---------------------------------------------------------------------------
@@ -349,6 +386,56 @@ class Setting(Base):
     )
 
 
+# ---------------------------------------------------------------------------
+# 10. claims — 原子论断
+# ---------------------------------------------------------------------------
+
+
+class Claim(Base):
+    """原子论断表（机会信号地基：局限聚类/矛盾检测/方法迁移）."""
+
+    __tablename__ = "claims"
+    __table_args__ = (
+        CheckConstraint(
+            "claim_form IN ('effect', 'state', 'characterization', 'comparison')",
+            name="ck_claims_claim_form",
+        ),
+        CheckConstraint(
+            "topic IS NULL OR topic IN ('efficacy', 'safety', 'manufacturing', 'mechanism', 'other')",
+            name="ck_claims_topic",
+        ),
+        CheckConstraint(
+            "extraction_source IN ('model', 'human_verified')",
+            name="ck_claims_extraction_source",
+        ),
+        Index("ix_claims_paper_id", "paper_id"),
+        Index("ix_claims_claim_form", "claim_form"),
+        Index("ix_claims_topic", "topic"),
+        Index("ix_claims_is_limitation", "is_limitation"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid4)
+    paper_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("papers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    claim_form: Mapped[str] = mapped_column(String(20), nullable=False)
+    topic: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    direction: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    comparison_result: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    magnitude: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    context: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    stat_support: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    is_limitation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    quote: Mapped[str] = mapped_column(String(300), nullable=False)
+    quote_page: Mapped[int] = mapped_column(Integer, nullable=False)
+    extraction_source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=ExtractionSource.MODEL.value,
+    )
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
 __all__ = [
     "Base",
     "Paper",
@@ -361,7 +448,13 @@ __all__ = [
     "ChatSession",
     "PaperAuditLog",
     "Setting",
+    "Claim",
     "PaperStatus",
     "SessionType",
     "BlockName",
+    "ClaimForm",
+    "Topic",
+    "Direction",
+    "ComparisonResult",
+    "ExtractionSource",
 ]
