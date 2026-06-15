@@ -50,6 +50,8 @@ hidden_imports = [
     'alembic.runtime.migration', 'alembic.command', 'alembic.config',
     # Kimi API
     'openai', 'httpx',
+    # json_repair（AI 输出 JSON 修复；PyInstaller 隐藏导入）
+    'json_repair',
     # 其他
     'aiofiles', 'email_validator', 'jose', 'pypdfium2',
 ]
