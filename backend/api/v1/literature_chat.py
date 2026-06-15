@@ -28,7 +28,7 @@ from backend.models.tables import (
     SessionType,
 )
 from backend.services.db import SessionLocal
-from backend.services.extract_prompt import (
+from backend.services.chat_prompt import (
     build_cross_literature_chat_prompt,
     build_single_paper_chat_prompt,
 )
@@ -93,27 +93,37 @@ def _get_abstracts(db: Session, paper_ids: list[str]) -> list[dict]:
         }
         if ext:
             info.update({
+                "research_question": ext.research_question or ext.background or "",
+                "sample_source": ext.sample_source or "",
+                "sample_size": ext.sample_size or "",
+                "key_methods": ext.key_methods or ([ext.methods] if ext.methods else []),
+                "key_data": ext.key_data or ext.key_results or [],
+                "conclusion": ext.conclusion or "",
+                "limitations": ext.limitations or [],
+                "keywords": ext.keywords or [],
+                # 保留旧字段兼容过渡
                 "background": ext.background or "",
                 "methods": ext.methods or "",
                 "key_results": ext.key_results or [],
-                "conclusion": ext.conclusion or "",
-                "keywords": ext.keywords or [],
             })
         results.append(info)
     return results
 
 
 def _format_abstract_for_prompt(info: dict) -> str:
-    """将单篇摘要格式化为 Prompt 友好的字符串."""
+    """将单篇摘要格式化为 Prompt 友好的字符串（新字段优先）."""
     lines = [
         f"文献: {info.get('title', '未命名')}",
         f"作者: {', '.join(info.get('authors', [])) or '未知'}",
         f"年份: {info.get('year', '未知')}",
-        f"背景: {info.get('background', '未提取')}",
-        f"方法: {info.get('methods', '未提取')}",
-        f"核心结果: {'; '.join(info.get('key_results', [])) or '未提取'}",
-        f"结论: {info.get('conclusion', '未提取')}",
-        f"关键词: {', '.join(info.get('keywords', [])) or '未提取'}",
+        f"研究问题: {info.get('research_question', '未提供')}",
+        f"样本来源: {info.get('sample_source', '未提供')}",
+        f"样本量: {info.get('sample_size', '未提供')}",
+        f"关键技术: {'; '.join(info.get('key_methods', [])) or '未提供'}",
+        f"核心数据: {'; '.join(info.get('key_data', [])) or '未提供'}",
+        f"结论: {info.get('conclusion', '未提供')}",
+        f"局限性: {'; '.join(info.get('limitations', [])) or '未提供'}",
+        f"关键词: {', '.join(info.get('keywords', [])) or '未提供'}",
     ]
     return "\n".join(lines)
 
@@ -227,7 +237,7 @@ async def cross_literature_chat(body: CrossLiteratureChatRequest, request: Reque
         # 检查是否有未提取的文献
         missing_titles = []
         for info in abstracts:
-            if not info.get("background") and not info.get("methods"):
+            if not info.get("research_question") and not info.get("key_data"):
                 missing_titles.append(info.get("title", "") or info["paper_id"][:8])
         if missing_titles and len(missing_titles) == len(abstracts):
             raise HTTPException(
@@ -370,10 +380,13 @@ async def single_paper_chat(
                 "title": paper.title or "未命名",
                 "authors": paper.authors or [],
                 "year": paper.year or "未知",
-                "background": ext.background or "",
-                "methods": ext.methods or "",
-                "key_results": ext.key_results or [],
+                "research_question": ext.research_question or ext.background or "",
+                "sample_source": ext.sample_source or "",
+                "sample_size": ext.sample_size or "",
+                "key_methods": ext.key_methods or ([ext.methods] if ext.methods else []),
+                "key_data": ext.key_data or ext.key_results or [],
                 "conclusion": ext.conclusion or "",
+                "limitations": ext.limitations or [],
                 "keywords": ext.keywords or [],
             })
             prompt = build_single_paper_chat_prompt(
