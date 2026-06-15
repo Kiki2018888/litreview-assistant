@@ -13,6 +13,7 @@
 | 2026-06-04 | v0.1 | 框架初始化，仅列路径和状态 | 🔓 未锁定 |
 | 2026-06-08 | v1.0 | 锁定 10 个核心接口，填充完整 Schema | 🔒 已锁定 |
 | 2026-06-08 | v1.1 | 修正 SSE 事件类型（对齐后端实际实现）、Chat 请求体字段、Settings 响应字段 | 🔒 已锁定 |
+| 2026-06-15 | v1.3.0 | 批次→项目迁移完成：第二节改写为 projects，batch_id 标注 deprecated 兼容别名，刷新各节实际状态 | 🔒 已锁定 |
 
 ---
 
@@ -20,7 +21,7 @@
 
 | 方法 | 路径 | 状态 | 锁定日期 | 验证方式 |
 |------|------|------|----------|----------|
-| GET | `/health` | ⬜ 待开发 | — | — |
+| GET | `/health` | ✅ 已验证 | 2026-06-15 | Postman |
 
 **响应 Schema**：
 ```json
@@ -32,19 +33,31 @@
 
 ---
 
-## 二、批次管理（`/api/v1/batches`）
+## 二、项目管理（`/api/v1/projects`）
+
+> **历史说明**：v1.1.0 前称为"批次管理"（`/api/v1/batches`），现已彻底下线并由 `/api/v1/projects` 替代。
 
 | 方法 | 路径 | 状态 | 锁定日期 | 验证方式 |
 |------|------|------|----------|----------|
-| POST | `/` | ⬜ 待开发 | — | — |
-| GET | `/` | ✅ 已验证 | — | Postman |
-| GET | `/{id}` | ⬜ 待开发 | — | — |
-| PUT | `/{id}` | ⬜ 待开发 | — | — |
-| DELETE | `/{id}` | ⬜ 待开发 | — | — |
+| POST | `/` | ✅ 已验证 | 2026-06-15 | pytest |
+| GET | `/` | ✅ 已验证 | 2026-06-15 | pytest |
+| GET | `/{project_id}` | ✅ 已验证 | 2026-06-15 | pytest |
+| PUT | `/{project_id}` | ✅ 已验证 | 2026-06-15 | pytest |
+| DELETE | `/{project_id}` | ✅ 已验证 | 2026-06-15 | pytest |
+| POST | `/{project_id}/move-papers` | ✅ 已验证 | 2026-06-15 | pytest |
+| POST | `/{project_id}/batch-extract` | ✅ 已验证 | 2026-06-15 | pytest + SSE |
 
-### GET `/` —— 批次列表
+### GET `/` —— 项目列表
+
+**查询参数**：
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| page | number | ❌ | 1 | 页码，从 1 开始 |
+| page_size | number | ❌ | 20 | 每页条数，最大 100 |
 
 **响应 Schema**：
+
 ```json
 {
   "items": [
@@ -53,6 +66,7 @@
       "name": "string",
       "description": "string | null",
       "paper_count": 0,
+      "is_default": false,
       "created_at": "string (ISO 8601 datetime)",
       "updated_at": "string (ISO 8601 datetime)"
     }
@@ -65,12 +79,85 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| items[].id | string (UUID) | ✅ | 批次唯一标识 |
-| items[].name | string | ✅ | 批次名称，1-100 字符 |
-| items[].description | string \| null | ❌ | 批次描述 |
-| items[].paper_count | number | ✅ | 批次内文献数量 |
+| items[].id | string (UUID) | ✅ | 项目唯一标识 |
+| items[].name | string | ✅ | 项目名称，1-100 字符 |
+| items[].description | string \| null | ❌ | 项目描述 |
+| items[].paper_count | number | ✅ | 项目内文献数量 |
+| items[].is_default | boolean | ✅ | 是否为默认项目「未分类」（不可删除/不可改名） |
 | items[].created_at | string (datetime) | ✅ | 创建时间 ISO 8601 |
 | items[].updated_at | string (datetime) | ✅ | 更新时间 ISO 8601 |
+
+> **默认项目**：系统初始化时自动创建「未分类」项目（is_default=true），文献上传未指定 project_id 时自动归入该项目。该默认项目不可删除、不可重命名。
+
+### POST `/` —— 创建项目
+
+**请求 Schema**：
+
+```json
+{
+  "name": "string",
+  "description": "string | null"
+}
+```
+
+**响应 Schema**：同列表项（`ProjectResponse`），状态码 201。
+
+### GET `/{project_id}` —— 项目详情
+
+响应用于列表项的 `ProjectResponse` 基础字段外追加：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| paper_ids | string[] (UUID) | 该项目下所有文献 ID 列表 |
+
+### PUT `/{project_id}` —— 更新项目
+
+**请求 Schema**：
+
+```json
+{
+  "name": "string | null",
+  "description": "string | null"
+}
+```
+
+> **约束**：默认项目（is_default=true）不可重命名，传入不同的 name 返回 400。
+
+### DELETE `/{project_id}` —— 删除项目
+
+**响应 Schema**：
+
+```json
+{
+  "success": true,
+  "moved_count": 5
+}
+```
+
+> **约束**：默认项目不可删除（400）。删除后项目内文献自动移入「未分类」项目，不丢失任何文献。
+
+### POST `/{project_id}/move-papers` —— 批量移动文献到项目
+
+**请求 Schema**：
+
+```json
+{
+  "paper_ids": ["uuid1", "uuid2"]
+}
+```
+
+**响应 Schema**：
+
+```json
+{
+  "success": true,
+  "moved_count": 2
+}
+```
+
+### POST `/{project_id}/batch-extract` —— 一键提取项目全部文献
+
+无请求体，SSE 流式响应（进度事件同第五节）。
 
 ---
 
@@ -89,7 +176,7 @@
 | page | number | ❌ | 1 | 页码，从 1 开始 |
 | page_size | number | ❌ | 20 | 每页条数，最大 100 |
 | status | string | ❌ | — | 筛选状态：pending / extracting / completed / failed / extract_failed |
-| batch_id | string (UUID) | ❌ | — | 按批次筛选 |
+| project_id | string (UUID) | ❌ | — | 按项目筛选（正名）；`batch_id` 作为已废弃兼容别名仍受支持，计划在未来版本移除 |
 | search | string | ❌ | — | 全文搜索关键词 |
 | tag | string | ❌ | — | 按标签筛选 |
 
@@ -106,7 +193,7 @@
       "journal": "string | null",
       "status": "pending",
       "tags": ["string"],
-      "batch_id": "string (UUID) | null",
+      "project_id": "string (UUID) | null",
       "created_at": "string (ISO 8601 datetime)"
     }
   ],
@@ -125,7 +212,7 @@
 | items[].journal | string \| null | ❌ | 期刊名称 |
 | items[].status | string (enum) | ✅ | 状态：pending \| extracting \| completed \| failed \| extract_failed |
 | items[].tags | string[] | ✅ | 标签列表（可为空数组 []） |
-| items[].batch_id | string (UUID) \| null | ❌ | 所属批次 ID |
+| items[].project_id | string (UUID) \| null | ❌ | 所属项目 ID（正名）；`batch_id` 为已废弃兼容别名，计划在未来版本移除 |
 | items[].created_at | string (datetime) | ✅ | 创建时间 ISO 8601 |
 
 ---
@@ -150,7 +237,7 @@
   "journal": "Nature | null",
   "doi": "10.xxx/xxx | null",
   "status": "completed",
-  "batch_id": "string (UUID) | null",
+  "project_id": "string (UUID) | null",
   "is_scanned": false,
   "extraction_attempts": 1,
   "last_error": "string | null",
@@ -185,7 +272,7 @@
 | journal | string \| null | ❌ | 期刊名称 |
 | doi | string \| null | ❌ | DOI |
 | status | string (enum) | ✅ | 状态：pending \| extracting \| completed \| failed \| extract_failed |
-| batch_id | string (UUID) \| null | ❌ | 所属批次 ID |
+| project_id | string (UUID) \| null | ❌ | 所属项目 ID（正名）；`batch_id` 为已废弃兼容别名，计划在未来版本移除 |
 | is_scanned | boolean | ✅ | 是否为扫描版 PDF |
 | extraction_attempts | number | ✅ | 提取尝试次数 |
 | last_error | string \| null | ❌ | 最近一次错误信息 |
@@ -208,7 +295,7 @@
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | files | File[] | ✅ | PDF 文件列表（多文件） |
-| batch_id | string (UUID) | ❌ | 可选，指定所属批次 |
+| project_id | string (UUID) | ❌ | 可选，指定所属项目（正名）；`batch_id` 作为已废弃兼容别名仍受支持，计划在未来版本移除 |
 
 **响应 Schema**：
 
@@ -294,7 +381,7 @@ data: {"type":"done"}
 {
   "question": "string",
   "paper_ids": ["uuid1", "uuid2"] | null,
-  "batch_id": "string (UUID) | null",
+  "project_id": "string (UUID) | null",
   "session_id": "string (UUID) | null"
 }
 ```
@@ -302,8 +389,8 @@ data: {"type":"done"}
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | question | string | ✅ | 用户提问 |
-| paper_ids | string[] (UUID) | ❌ | 文献 ID 列表（与 batch_id 二选一） |
-| batch_id | string (UUID) | ❌ | 批次 ID（与 paper_ids 二选一） |
+| paper_ids | string[] (UUID) | ❌ | 文献 ID 列表（与 project_id 二选一） |
+| project_id | string (UUID) | ❌ | 项目 ID（正名，与 paper_ids 二选一）；`batch_id` 作为已废弃兼容别名仍受支持，内部会自动转换为 project_id |
 | session_id | string (UUID) | ❌ | 续接已有会话，不传则新建 |
 
 **SSE 事件类型**：
@@ -355,23 +442,15 @@ data: {"type":"done"}
 
 ---
 
-## 五、批量提取（`/api/v1/batches/batch-extract`）
+## 五、批量提取（`/api/v1/projects/{project_id}/batch-extract`）
+
+> **历史说明**：v1.1.0 前位于 `/api/v1/batches/batch-extract`，现已迁至 projects 子路由。该项目下的 pending 文献会被依次提取。
 
 | 方法 | 路径 | 状态 | 锁定日期 | 验证方式 |
 |------|------|------|----------|----------|
-| POST | `/batch-extract` | ✅ 已验证 | 2026-06-08 | Postman + SSE |
+| POST | `/api/v1/projects/{project_id}/batch-extract` | ✅ 已验证 | 2026-06-15 | pytest + SSE |
 
-**请求（可选）**：
-
-```json
-{
-  "batch_id": "string (UUID) | null"
-}
-```
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| batch_id | string (UUID) \| null | ❌ | 指定批次，不传则提取全部 pending 文献 |
+**请求**：无请求体（project_id 在 URL 路径中）。
 
 **SSE 进度事件格式**：
 
@@ -413,9 +492,9 @@ data: {"type": "done", "success_count": 0, "fail_count": 0, "message": "没有�
 
 | 方法 | 路径 | 状态 | 锁定日期 | 验证方式 |
 |------|------|------|----------|----------|
-| GET | `/` | ⬜ 待开发 | — | — |
-| GET | `/{id}` | ⬜ 待开发 | — | — |
-| DELETE | `/{id}` | ⬜ 待开发 | — | — |
+| GET | `/` | ✅ 已验证 | 2026-06-15 | pytest |
+| GET | `/{session_id}` | ✅ 已验证 | 2026-06-15 | pytest |
+| DELETE | `/{session_id}` | ✅ 已验证 | 2026-06-15 | pytest |
 
 ---
 
@@ -508,9 +587,9 @@ data: {"type": "done", "success_count": 0, "fail_count": 0, "message": "没有�
 
 | 方法 | 路径 | 状态 | 锁定日期 | 验证方式 |
 |------|------|------|----------|----------|
-| GET | `/db-stats` | ⬜ 待开发 | — | — |
-| POST | `/export-db` | ⬜ 待开发 | — | — |
-| POST | `/reset-db` | ⬜ 待开发 | — | — |
+| GET | `/db-stats` | ✅ 已验证 | 2026-06-15 | pytest |
+| POST | `/export-db` | ✅ 已验证 | 2026-06-15 | pytest |
+| POST | `/reset-db` | ✅ 已验证 | 2026-06-15 | pytest |
 
 ---
 
