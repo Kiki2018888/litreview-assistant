@@ -194,11 +194,36 @@ def export_db(request: Request):
     if not DB_PATH.exists():
         raise HTTPException(status_code=404, detail="数据库文件不存在")
 
-    return FileResponse(
+    # WAL checkpoint: 将未写入主库的脏页刷入 .db，保证导出为完整快照。
+    # PRAGMA wal_checkpoint(TRUNCATE) 返回 (busy, log, checkpointed):
+    #   busy=1  → 有读锁阻塞，checkpoint 未完全推进
+    #   log>0   → WAL 仍有残留帧，未全部刷入主库
+    db = SessionLocal()
+    try:
+        result = db.execute(text("PRAGMA wal_checkpoint(TRUNCATE)")).fetchone()
+        busy, log_frames, _ = result[0], result[1], result[2]
+        incomplete = (busy != 0 or log_frames > 0)
+    finally:
+        db.close()
+
+    if incomplete:
+        logger.warning(
+            "WAL checkpoint 未完全完成 (busy=%d, log=%d)，"
+            "导出的备份可能不完整，建议无并发写入时重试",
+            busy, log_frames,
+        )
+
+    # 注：前端做导出 UI 时需读取响应头 X-Checkpoint-Warning 并提示用户
+    response = FileResponse(
         path=str(DB_PATH),
         filename=f"research-assistant-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.db",
         media_type="application/octet-stream",
     )
+    if incomplete:
+        response.headers["X-Checkpoint-Warning"] = (
+            "incomplete; export may miss recent writes; retry when idle"
+        )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +249,13 @@ def reset_db(body: ResetDbRequest, request: Request):
     if DB_PATH.exists():
         os.remove(str(DB_PATH))
         logger.info("已删除数据库文件: %s", DB_PATH)
+
+    # 清理 WAL 附属文件（-wal / -shm），避免 reset 后残留孤儿文件
+    for suffix in ("-wal", "-shm"):
+        aux = str(DB_PATH) + suffix
+        if os.path.exists(aux):
+            os.remove(aux)
+            logger.info("已删除 WAL 附属文件: %s", aux)
 
     # 3. 删除 PDF 目录
     if PDF_DIR.exists():
