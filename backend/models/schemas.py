@@ -168,9 +168,9 @@ class ExtractedDataContract(BaseModel):
     sample_source: str = Field(..., min_length=1)
     sample_size: Optional[str] = ""
     key_methods: list[str] = Field(default_factory=list)
-    key_data: list[str] = Field(default_factory=list)
+    key_data: list[str] = Field(..., min_length=1)
     conclusion: str = Field(..., min_length=1)
-    limitations: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(..., min_length=1)
     keywords: list[str] = Field(default_factory=list)
     # 兼容旧字段
     background: Optional[str] = ""

@@ -79,7 +79,34 @@ class TestParseAndValidate:
         })
         with pytest.raises(PydanticValidationError) as exc_info:
             parse_and_validate(data)
-        assert "至少需要 1 条" in str(exc_info.value)
+        errors = exc_info.value.errors()
+        assert any("limitations" in str(e["loc"]) for e in errors)
+
+    def test_omit_key_data_field_fails(self):
+        """完全 omit key_data 字段 → 校验失败（防整字段省略绕过）."""
+        data = json.dumps({
+            "research_question": "Q",
+            "sample_source": "S",
+            "conclusion": "C",
+            "limitations": ["Only in vitro"],
+        })
+        with pytest.raises(PydanticValidationError) as exc_info:
+            parse_and_validate(data)
+        errors = exc_info.value.errors()
+        assert any("key_data" in str(e["loc"]) for e in errors)
+
+    def test_omit_limitations_field_fails(self):
+        """完全 omit limitations 字段 → 校验失败（防整字段省略绕过）."""
+        data = json.dumps({
+            "research_question": "Q",
+            "sample_source": "S",
+            "conclusion": "C",
+            "key_data": ["n=30"],
+        })
+        with pytest.raises(PydanticValidationError) as exc_info:
+            parse_and_validate(data)
+        errors = exc_info.value.errors()
+        assert any("limitations" in str(e["loc"]) for e in errors)
 
     def test_key_data_with_percent_passes(self):
         """key_data 含百分比 → 通过."""
