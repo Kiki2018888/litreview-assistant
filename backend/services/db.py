@@ -1,7 +1,10 @@
 """数据库连接管理.
 
 - SQLAlchemy 引擎与 SessionLocal 工厂
-- 启用 SQLite 外键约束（PRAGMA foreign_keys=ON）
+- SQLite PRAGMA（每连接自动执行）：
+  - foreign_keys=ON    外键约束
+  - journal_mode=WAL   Write-Ahead Logging，读不阻塞写
+  - busy_timeout=5000  写锁等待 5 秒，防止 database is locked
 - 提供 FastAPI 依赖注入函数 get_db()
 """
 from __future__ import annotations
@@ -43,12 +46,19 @@ engine = create_engine(
 
 @event.listens_for(Engine, "connect")
 def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):  # noqa: ARG001
-    """新连接建立时开启 SQLite 外键约束."""
+    """新连接建立时应用 SQLite PRAGMA 配置（每个连接独立执行）.
+
+    - foreign_keys=ON: 外键约束
+    - journal_mode=WAL: Write-Ahead Logging，读不阻塞写
+    - busy_timeout=5000: 写锁等待 5 秒，避免 database is locked
+    """
     # 仅对 SQLite 生效；其他方言跳过
     if engine.dialect.name == "sqlite":
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
         finally:
             cursor.close()
 
