@@ -26,6 +26,7 @@ wheels/
 *.egg
 MANIFEST
 .env
+.env.local
 .venv
 env/
 venv/
@@ -108,3 +109,12 @@ backend/tests/_*.txt
 *.key
 secrets.json
 credentials.json
+
+# ---------- 审阅报告（不入库） ----------
+审阅报告2.md
+
+# ---------- Claims 抽取临时文件 ----------
+_claims_workdir/
+_extract_error.txt
+_extract_output.txt
+_test_contract_vuln.py
