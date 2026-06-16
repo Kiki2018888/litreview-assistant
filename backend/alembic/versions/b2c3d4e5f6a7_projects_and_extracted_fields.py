@@ -138,7 +138,7 @@ def upgrade() -> None:
                 INSERT OR IGNORE INTO projects (id, name, description, paper_count, is_default, created_at, updated_at)
                 VALUES (
                     '{DEFAULT_PROJECT_ID}',
-                    '未分类',
+                    '我的文献',
                     NULL,
                     0,
                     1,

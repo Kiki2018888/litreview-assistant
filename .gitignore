@@ -57,6 +57,7 @@ frontend/.cache/
 # ---------- Electron ----------
 electron/dist/
 release/
+release_v2/
 out/
 *.dmg
 *.exe

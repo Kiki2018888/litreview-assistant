@@ -10,11 +10,11 @@ from sqlalchemy.orm import Session
 from backend.models.tables import Paper, Project
 
 DEFAULT_UNCATEGORIZED_PROJECT_ID = "00000000-0000-4000-a000-000000000001"
-DEFAULT_UNCATEGORIZED_PROJECT_NAME = "未分类"
+DEFAULT_UNCATEGORIZED_PROJECT_NAME = "我的文献"
 
 
 def get_default_project(db: Session) -> Project:
-    """获取默认「未分类」项目，不存在则创建."""
+    """获取默认「我的文献」项目，不存在则创建."""
     project = (
         db.query(Project)
         .filter(Project.is_default.is_(True))

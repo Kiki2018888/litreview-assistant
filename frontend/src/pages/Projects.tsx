@@ -253,7 +253,7 @@ export default function ProjectsPage() {
             <DialogTitle>{editing ? "编辑项目" : "新建项目"}</DialogTitle>
             <DialogDescription>
               {editing?.is_default
-                ? "默认项目「未分类」仅可修改描述"
+                ? "默认项目「我的文献」仅可修改描述"
                 : "项目名称 1-100 字，描述可选"}
             </DialogDescription>
           </DialogHeader>
@@ -298,7 +298,7 @@ export default function ProjectsPage() {
             <DialogTitle>确定删除项目？</DialogTitle>
             <DialogDescription>
               将删除项目「{deleteTarget?.name}」。其中 {deleteTarget?.paper_count ?? 0}{" "}
-              篇文献将移入「未分类」，文献本身不会被删除。此操作不可撤销。
+              篇文献将移入「我的文献」，文献本身不会被删除。此操作不可撤销。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

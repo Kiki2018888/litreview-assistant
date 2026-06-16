@@ -110,7 +110,7 @@ def update_project(project_id: str, body: ProjectUpdate) -> ProjectResponse:
     try:
         project = _get_project_or_404(db, project_id)
         if project.is_default and body.name is not None and body.name != project.name:
-            raise HTTPException(status_code=400, detail="默认项目「未分类」不可重命名")
+            raise HTTPException(status_code=400, detail="默认项目「我的文献」不可重命名")
 
         update_data = body.model_dump(exclude_unset=True)
         for key, value in update_data.items():
@@ -125,7 +125,7 @@ def update_project(project_id: str, body: ProjectUpdate) -> ProjectResponse:
 
 @router.delete("/{project_id}", response_model=ProjectDeleteResponse)
 def delete_project(project_id: str) -> ProjectDeleteResponse:
-    """删除项目：文献移入「未分类」，不删除文献本身."""
+    """删除项目：文献移入「我的文献」，不删除文献本身."""
     db = SessionLocal()
     try:
         project = _get_project_or_404(db, project_id)

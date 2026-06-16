@@ -63,6 +63,11 @@ _ensure_dirs()
 
 VERSION = "1.1.0"
 
+# .env 文件路径：显式锚定绝对路径，不依赖 cwd。
+# - 开发模式：项目根/.env
+# - frozen 模式：%APPDATA%/ResearchAssistant/.env（DATA_DIR 在 data/ 子目录下）
+_ENV_FILE = str(DATA_DIR.parent / ".env") if getattr(sys, "frozen", False) else str(_PROJECT_ROOT / ".env")
+
 
 # ---------------------------------------------------------------------------
 # Pydantic Settings：环境变量可覆盖的配置
@@ -77,7 +82,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="RA_",
-        env_file=".env",
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )

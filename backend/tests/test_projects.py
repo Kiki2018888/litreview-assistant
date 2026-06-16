@@ -24,7 +24,7 @@ class TestListProjects:
         resp = client.get(PROJECTS + "/")
         assert resp.status_code == 200
         items = resp.json()["items"]
-        assert any(p["name"] == "未分类" and p["is_default"] for p in items)
+        assert any(p["name"] == "我的文献" and p["is_default"] for p in items)
 
 
 class TestGetProject:

@@ -52,6 +52,9 @@ hidden_imports = [
     'openai', 'httpx',
     # json_repair（AI 输出 JSON 修复；PyInstaller 隐藏导入）
     'json_repair',
+    # rapidfuzz（quote_locator 核心依赖，C 扩展，PyInstaller 不会自动检测）
+    'rapidfuzz', 'rapidfuzz.fuzz', 'rapidfuzz.process',
+    'rapidfuzz.distance', 'rapidfuzz.distance.Levenshtein',
     # 其他
     'aiofiles', 'email_validator', 'jose', 'pypdfium2',
 ]

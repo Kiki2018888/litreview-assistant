@@ -300,7 +300,7 @@ def sample_paper(db_session):
 
 @pytest.fixture(autouse=True)
 def _ensure_default_project(db_session):
-    """每个测试确保存在默认「未分类」项目."""
+    """每个测试确保存在默认「我的文献」项目."""
     from backend.services.project_service import get_default_project
 
     get_default_project(db_session)
