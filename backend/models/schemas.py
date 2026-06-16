@@ -546,6 +546,8 @@ class SignalClaimResponse(_ORMModel):
     quote_page: int
     topic: Optional[str] = None
     context_summary: Optional[str] = None
+    claim_form: Optional[str] = None       # F-05: 对齐 get_signal_detail 实际返回
+    quote_status: Optional[str] = None     # F-05: verified/unverified/null
     added_by: str
     added_at: datetime
 

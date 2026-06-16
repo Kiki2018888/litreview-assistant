@@ -285,7 +285,11 @@ def update_signal(
     status: Optional[SignalStatus] = None,
     human_rationale: Optional[str] = None,
 ) -> Signal:
-    """修改信号（改名/改状态/改备注）."""
+    """修改信号（改名/改状态/改备注）.
+
+    F-04 fix: 当 status 从 rejected/pending 变为 accepted、且信号当前无 signal_claims
+    桥接行时，从 candidate_group_claims 重新导入全部 claim 到 signal_claims。
+    """
     sig = db.get(Signal, signal_id)
     if not sig:
         raise ValueError("信号不存在")
@@ -306,6 +310,37 @@ def update_signal(
             SignalStatus.REJECTED,
         ):
             sig.adjudicated_at = datetime.utcnow()
+
+        # F-04: rejected/pending → accepted + 无桥接行 → 从候选组重新导入 claims
+        if (
+            status == SignalStatus.ACCEPTED
+            and old_status != SignalStatus.ACCEPTED.value
+            and sig.candidate_group_id
+        ):
+            db.flush()  # 确保 status 变更对后续查询可见
+            existing_count = (
+                db.query(SignalClaim)
+                .filter(
+                    and_(
+                        SignalClaim.signal_id == signal_id,
+                        SignalClaim.added_by != ClaimAddition.MANUAL_REMOVE.value,
+                    )
+                )
+                .count()
+            )
+            if existing_count == 0:
+                cgc_rows = (
+                    db.query(CandidateGroupClaim)
+                    .filter(CandidateGroupClaim.candidate_group_id == sig.candidate_group_id)
+                    .all()
+                )
+                for cgc in cgc_rows:
+                    db.add(SignalClaim(
+                        signal_id=sig.id,
+                        claim_id=cgc.claim_id,
+                        added_by=ClaimAddition.ADOPTED_FROM_GROUP.value,
+                    ))
+                sig.claim_count = len(cgc_rows)
 
     if human_rationale is not None:
         sig.human_rationale = human_rationale

@@ -460,7 +460,7 @@ function DetailView({ groupId, onBack }: { groupId: string; onBack: () => void }
             {detail.topic && (
               <Badge variant="outline" className="text-[0.65rem]">{detail.topic}</Badge>
             )}
-            <span>{detail.claim_count} 条 claim</span>
+            <span>{signal?.claim_count ?? detail.claim_count} 条 claim</span>
             {formatCrossPaper(detail.cross_paper)}
             {detail.grouping_basis && (
               <span className="text-muted-foreground/60">· {detail.grouping_basis}</span>
