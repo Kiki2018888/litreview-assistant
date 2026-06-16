@@ -32,6 +32,9 @@ keyring==25.2.0
 # ---------- JSON Repair ----------
 json-repair==0.60.1
 
+# ---------- Fuzzy matching ----------
+rapidfuzz>=3.0.0
+
 # ---------- Utilities ----------
 aiofiles==23.2.1
 python-jose[cryptography]==3.3.0

@@ -115,6 +115,20 @@ class ExtractionSource(str, Enum):
     HUMAN_VERIFIED = "human_verified"
 
 
+class SignalStatus(str, Enum):
+    """裁决状态（ADR-7：人的裁决，不是 AI 的判定）."""
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
+class ClaimAddition(str, Enum):
+    """signal_claims 中 claim 的加入/移除方式."""
+    ADOPTED_FROM_GROUP = "adopted_from_group"  # 从候选组采纳
+    MANUAL_ADD = "manual_add"                  # 手动加入
+    MANUAL_REMOVE = "manual_remove"            # 手动踢出（留痕，不删行）
+
+
 # ---------------------------------------------------------------------------
 # 1. papers — 文献元数据
 # ---------------------------------------------------------------------------
@@ -433,7 +447,143 @@ class Claim(Base):
     extraction_source: Mapped[str] = mapped_column(
         String(20), nullable=False, default=ExtractionSource.MODEL.value,
     )
+    quote_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    char_span_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    char_span_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# 11. candidate_groups — AI 聚类输出的候选组快照（ADR-7）
+# ---------------------------------------------------------------------------
+
+
+class CandidateGroup(Base):
+    """AI 产出的候选组（不可变快照，每次聚类运行新增一批）."""
+
+    __tablename__ = "candidate_groups"
+    __table_args__ = (
+        Index("ix_candidate_groups_run_id", "run_id"),
+        Index("ix_candidate_groups_topic", "topic"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid4)
+    run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    group_label: Mapped[str] = mapped_column(String(200), nullable=False)
+    topic: Mapped[str] = mapped_column(String(20), nullable=False)
+    grouping_method: Mapped[str] = mapped_column(String(50), nullable=False)
+    grouping_basis: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cross_paper: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    claim_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+# ---------------------------------------------------------------------------
+# 12. candidate_group_claims — 候选组 ↔ claim 桥接
+# ---------------------------------------------------------------------------
+
+
+class CandidateGroupClaim(Base):
+    """候选组内的 claim 成员关系."""
+
+    __tablename__ = "candidate_group_claims"
+    __table_args__ = (
+        Index("ix_cgroup_claims_group_id", "candidate_group_id"),
+    )
+
+    candidate_group_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("candidate_groups.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    claim_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("claims.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    claim_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+# ---------------------------------------------------------------------------
+# 13. signals — 人裁决后的信号（ADR-7：人来判）
+# ---------------------------------------------------------------------------
+
+
+class Signal(Base):
+    """人的裁决结果：采纳/否决/待定。
+
+    创建后独立于 candidate_group 存在（candidate_group_id 可为 null），
+    重跑聚类仅新增候选组、绝不触碰已有 signals。
+    """
+
+    __tablename__ = "signals"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'accepted', 'rejected')",
+            name="ck_signals_status",
+        ),
+        Index("ix_signals_status", "status"),
+        Index("ix_signals_topic", "topic"),
+        Index("ix_signals_cgroup_id", "candidate_group_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid4)
+    signal_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=SignalStatus.PENDING.value,
+    )
+    topic: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    candidate_group_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("candidate_groups.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    human_rationale: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    claim_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    adjudicated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# 14. signal_claims — 信号 ↔ claim 桥接
+# ---------------------------------------------------------------------------
+
+
+class SignalClaim(Base):
+    """信号内的 claim 成员关系，支持踢出留痕（manual_remove）."""
+
+    __tablename__ = "signal_claims"
+    __table_args__ = (
+        CheckConstraint(
+            "added_by IN ('adopted_from_group', 'manual_add', 'manual_remove')",
+            name="ck_signal_claims_added_by",
+        ),
+        Index("ix_signal_claims_signal_id", "signal_id"),
+    )
+
+    signal_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("signals.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    claim_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("claims.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    added_by: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=ClaimAddition.ADOPTED_FROM_GROUP.value,
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
 
 
 __all__ = [
@@ -449,6 +599,10 @@ __all__ = [
     "PaperAuditLog",
     "Setting",
     "Claim",
+    "CandidateGroup",
+    "CandidateGroupClaim",
+    "Signal",
+    "SignalClaim",
     "PaperStatus",
     "SessionType",
     "BlockName",
@@ -457,4 +611,6 @@ __all__ = [
     "Direction",
     "ComparisonResult",
     "ExtractionSource",
+    "SignalStatus",
+    "ClaimAddition",
 ]

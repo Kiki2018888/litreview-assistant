@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from backend.models.tables import BlockName, PaperStatus, SessionType
+from backend.models.tables import BlockName, PaperStatus, SessionType, SignalStatus, ClaimAddition
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +515,81 @@ class SettingResponse(SettingBase):
 
 
 # ---------------------------------------------------------------------------
+# 10. adjudication — 裁决（ADR-7：AI召回候选组，人裁决信号）
+# ---------------------------------------------------------------------------
+
+
+class AdjudicateRequest(_ORMModel):
+    """创建裁决请求（采纳或否决一个候选组）."""
+
+    action: str = Field(..., pattern=r"^(accept|reject)$")
+    candidate_group_id: str
+    signal_name: Optional[str] = Field(default=None, max_length=200)
+    human_rationale: Optional[str] = None
+
+
+class SignalUpdateRequest(_ORMModel):
+    """修改已有裁决."""
+
+    signal_name: Optional[str] = Field(default=None, max_length=200)
+    status: Optional[SignalStatus] = None
+    human_rationale: Optional[str] = None
+
+
+class SignalClaimResponse(_ORMModel):
+    """信号中的一条 claim."""
+
+    claim_id: str
+    paper_id: str
+    paper_title: Optional[str] = None
+    quote: str
+    quote_page: int
+    topic: Optional[str] = None
+    context_summary: Optional[str] = None
+    added_by: str
+    added_at: datetime
+
+
+class SignalResponse(_ORMModel):
+    """信号响应."""
+
+    id: str
+    signal_name: Optional[str] = None
+    status: str
+    topic: Optional[str] = None
+    candidate_group_id: Optional[str] = None
+    human_rationale: Optional[str] = None
+    claim_count: int
+    created_at: datetime
+    updated_at: datetime
+    adjudicated_at: Optional[datetime] = None
+
+
+class SignalDetailResponse(SignalResponse):
+    """信号详情（含 claims 列表）."""
+
+    claims: list[SignalClaimResponse] = Field(default_factory=list)
+
+
+class CandidateGroupResponse(_ORMModel):
+    """候选组响应（含裁决状态）."""
+
+    id: str
+    run_id: str
+    group_label: str
+    topic: str
+    grouping_method: str
+    grouping_basis: Optional[str] = None
+    cross_paper: bool
+    claim_count: int
+    created_at: datetime
+    # 关联的裁决状态（直接查询 signals 表计算）
+    adjudication_status: Optional[str] = None  # null=pending, 或 accepted/rejected
+    signal_id: Optional[str] = None
+    signal_name: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
 # 通用列表响应包装
 # ---------------------------------------------------------------------------
 
@@ -585,6 +660,13 @@ __all__ = [
     "SettingBase",
     "SettingUpdate",
     "SettingResponse",
+    # 10. adjudication
+    "AdjudicateRequest",
+    "SignalUpdateRequest",
+    "SignalClaimResponse",
+    "SignalResponse",
+    "SignalDetailResponse",
+    "CandidateGroupResponse",
     # 通用
     "ListResponse",
 ]

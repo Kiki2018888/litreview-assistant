@@ -118,3 +118,6 @@ _claims_workdir/
 _extract_error.txt
 _extract_output.txt
 _test_contract_vuln.py
+
+# ---------- 可重新生成的开发期产物 ----------
+outputs/

@@ -437,3 +437,76 @@ export interface ProjectExtractRequest {
 
 /** @deprecated 使用 ProjectExtractRequest */
 export type BatchExtractRequest = ProjectExtractRequest
+
+// ---------------------------------------------------------------------------
+// Adjudication — 裁决（ADR-7）
+// ---------------------------------------------------------------------------
+
+/** 裁决状态 */
+export type AdjudicationStatus = "pending" | "accepted" | "rejected"
+/** claim 被加入信号的方式 */
+export type ClaimAddition = "adopted_from_group" | "manual_remove"
+
+/** 候选组列表项 */
+export interface CandidateGroup {
+  id: string
+  run_id: string
+  group_label: string
+  topic: string | null
+  grouping_method: string | null
+  grouping_basis: string | null
+  cross_paper: boolean
+  claim_count: number
+  created_at: string
+  adjudication_status: string | null
+  signal_id: string | null
+  signal_name: string | null
+}
+
+/** 候选组内一条 claim（候选组详情 & 信号详情共用） */
+export interface ClaimInfo {
+  claim_id: string
+  paper_id: string
+  paper_title: string
+  quote: string
+  quote_page: number | null
+  topic: string | null
+  context_summary: string | null
+  claim_form: string | null
+  quote_status: string | null
+  added_by?: string
+  added_at?: string
+}
+
+/** 候选组详情 */
+export interface CandidateGroupDetail {
+  id: string
+  run_id: string
+  group_label: string
+  topic: string | null
+  grouping_method: string | null
+  grouping_basis: string | null
+  cross_paper: boolean
+  claim_count: number
+  created_at: string
+  claims: ClaimInfo[]
+}
+
+/** 信号列表项 / 创建响应 */
+export interface Signal {
+  id: string
+  signal_name: string | null
+  status: string
+  topic: string | null
+  candidate_group_id: string | null
+  human_rationale: string | null
+  claim_count: number
+  created_at: string
+  updated_at: string
+  adjudicated_at: string | null
+}
+
+/** 信号详情（含 claims） */
+export interface SignalDetail extends Signal {
+  claims: ClaimInfo[]
+}
