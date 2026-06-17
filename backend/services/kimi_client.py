@@ -117,6 +117,62 @@ class KimiClient:
             f"最后错误: {_format_error(last_error)}"
         )
 
+    async def chat_json(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        *,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        extra_body: Optional[dict] = None,
+    ) -> tuple[str, str | None, dict]:
+        """发送非流式 chat 请求（JSON Mode），返回 (content, finish_reason, usage_dict).
+
+        用于 structure extraction 等需要 json_object response_format 的场景。
+        """
+        last_error: Optional[Exception] = None
+
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                response = await self._client.chat.completions.create(
+                    model=model or self._model,
+                    messages=messages,
+                    temperature=temperature if temperature is not None else DEFAULT_TEMPERATURE,
+                    max_tokens=max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS,
+                    response_format={"type": "json_object"},
+                    extra_body=extra_body or {},
+                )
+                choice = response.choices[0]
+                usage = {
+                    "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                    "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                    "total_tokens": response.usage.total_tokens if response.usage else 0,
+                }
+                return (
+                    choice.message.content or "",
+                    choice.finish_reason,
+                    usage,
+                )
+
+            except Exception as exc:
+                last_error = exc
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                    logger.warning(
+                        "Kimi API JSON 请求失败 (尝试 %d/%d)，%0.1fs 后重试: %s",
+                        attempt + 1, MAX_RETRIES + 1, delay, exc,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        "Kimi API JSON 请求失败，已用尽全部 %d 次重试", MAX_RETRIES + 1
+                    )
+
+        raise RuntimeError(
+            f"Kimi API JSON 调用失败，已重试 {MAX_RETRIES} 次。"
+            f"最后错误: {_format_error(last_error)}"
+        )
+
     async def chat_stream(
         self,
         messages: list[ChatCompletionMessageParam],
@@ -203,6 +259,11 @@ def _get_client() -> KimiClient:
     return _client_singleton
 
 
+def get_model_name() -> str:
+    """获取当前配置的模型名称（用于耗时预估等）."""
+    return _get_client()._model
+
+
 async def chat(
     messages: list[ChatCompletionMessageParam],
     **kwargs: object,
@@ -223,6 +284,8 @@ async def chat_stream(
 __all__ = [
     "KimiClient",
     "chat",
+    "chat_json",
     "chat_stream",
+    "get_model_name",
     "reset_kimi_client",
 ]

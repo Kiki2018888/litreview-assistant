@@ -83,7 +83,7 @@ def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期：启动时确保目录/表存在，关闭时清理资源."""
+    """应用生命周期：启动时确保目录/表存在、启动 worker，关闭时清理资源."""
     # 启动：确保 data/ 与 logs/ 目录存在
     from backend.config import DATA_DIR, PDF_DIR
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -94,21 +94,48 @@ async def lifespan(app: FastAPI):
     # 首次运行自动建表
     _run_migrations()
 
-    # 启动重置：将异常中断卡在 extracting 的文献回退到 pending
-    from backend.models.tables import Paper, PaperStatus
+    # 启动重置：
+    # (a) 将异常中断卡在 extracting 的文献回退到 pending
+    # (b) 将异常中断卡在 running 的 Job 重置为 interrupted（同一事务）
+    from backend.models.tables import Paper, PaperStatus, ExtractJob, JobStatus
     from backend.services.db import SessionLocal
 
     with SessionLocal() as db:
+        # (a) 僵尸文献：extracting → pending
         zombies = db.query(Paper).filter(Paper.status == PaperStatus.EXTRACTING.value).all()
         for p in zombies:
             p.status = PaperStatus.PENDING.value
             p.last_error = "服务重启，提取中断"
-        if zombies:
+
+        # (b) 僵尸 Job：running/paused → interrupted
+        zombie_jobs = db.query(ExtractJob).filter(
+            ExtractJob.status.in_([JobStatus.RUNNING.value, JobStatus.PAUSED.value])
+        ).all()
+        for job in zombie_jobs:
+            job.status = JobStatus.INTERRUPTED.value
+
+        if zombies or zombie_jobs:
             db.commit()
-            logger.info("启动重置：%d 篇 extracting → pending", len(zombies))
+            if zombies:
+                logger.info("启动重置：%d 篇 extracting → pending", len(zombies))
+            if zombie_jobs:
+                logger.info("启动重置：%d 个 Job running/paused → interrupted", len(zombie_jobs))
+
+    # 启动 claims worker
+    import asyncio as _asyncio
+    from backend.services.extract_job_worker import claims_worker_loop
+
+    worker_task = _asyncio.create_task(claims_worker_loop())
+    logger.info("Claims worker 已启动")
 
     yield
-    # 关闭：无额外清理
+
+    # 关闭：取消 worker 并等待退出
+    worker_task.cancel()
+    try:
+        await worker_task
+    except _asyncio.CancelledError:
+        pass
     logger.info("ResearchAssistant 关闭")
 
 
@@ -170,6 +197,7 @@ from backend.api.v1.data import router as data_router
 from backend.api.v1.chat_sessions import router as chat_sessions_router
 from backend.api.v1.paper import router as paper_router
 from backend.api.v1.adjudication import router as adjudication_router
+from backend.api.v1.claims import router as claims_router, estimate_router, jobs_router
 
 # 固定路径路由器先注册：POST /chat 优先于 /{paper_id}
 app.include_router(literature_chat_router)
@@ -184,6 +212,9 @@ app.include_router(data_router)
 app.include_router(chat_sessions_router)
 app.include_router(paper_router, prefix="/api/v1")
 app.include_router(adjudication_router)
+app.include_router(claims_router)
+app.include_router(estimate_router)
+app.include_router(jobs_router)
 
 
 # ---------------------------------------------------------------------------

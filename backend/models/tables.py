@@ -129,6 +129,24 @@ class ClaimAddition(str, Enum):
     MANUAL_REMOVE = "manual_remove"            # 手动踢出（留痕，不删行）
 
 
+class JobType(str, Enum):
+    """任务类型."""
+    SUMMARY_EXTRACT = "summary_extract"
+    CLAIMS_EXTRACT = "claims_extract"
+    LIMITATION_CLUSTER = "limitation_cluster"
+
+
+class JobStatus(str, Enum):
+    """任务状态."""
+    QUEUED = "queued"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+    CANCELLED = "cancelled"
+
+
 # ---------------------------------------------------------------------------
 # 1. papers — 文献元数据
 # ---------------------------------------------------------------------------
@@ -422,6 +440,10 @@ class Claim(Base):
             "extraction_source IN ('model', 'human_verified')",
             name="ck_claims_extraction_source",
         ),
+        UniqueConstraint(
+            "paper_id", "quote_hash",
+            name="uq_claims_paper_quote_hash",
+        ),
         Index("ix_claims_paper_id", "paper_id"),
         Index("ix_claims_claim_form", "claim_form"),
         Index("ix_claims_topic", "topic"),
@@ -435,6 +457,7 @@ class Claim(Base):
         nullable=False,
     )
     claim_form: Mapped[str] = mapped_column(String(20), nullable=False)
+    subject: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     topic: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     direction: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     comparison_result: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
@@ -443,6 +466,7 @@ class Claim(Base):
     stat_support: Mapped[bool] = mapped_column(Boolean, nullable=False)
     is_limitation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     quote: Mapped[str] = mapped_column(String(300), nullable=False)
+    quote_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     quote_page: Mapped[int] = mapped_column(Integer, nullable=False)
     extraction_source: Mapped[str] = mapped_column(
         String(20), nullable=False, default=ExtractionSource.MODEL.value,
@@ -586,6 +610,57 @@ class SignalClaim(Base):
     )
 
 
+# ---------------------------------------------------------------------------
+# 15. extract_jobs — 任务级抽取/聚类 Job 管理
+# ---------------------------------------------------------------------------
+
+
+class ExtractJob(Base):
+    """抽取/聚类任务（按项目创建，追踪进度）."""
+
+    __tablename__ = "extract_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "job_type IN ('summary_extract', 'claims_extract', 'limitation_cluster')",
+            name="ck_extract_jobs_job_type",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'paused', 'completed', 'failed', 'interrupted', 'cancelled')",
+            name="ck_extract_jobs_status",
+        ),
+        Index("ix_extract_jobs_project_id", "project_id"),
+        Index("ix_extract_jobs_status", "status"),
+        Index("ix_extract_jobs_job_type", "job_type"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid4)
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    job_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=JobStatus.QUEUED.value,
+    )
+    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    succeeded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_paper_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("papers.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    error_summary: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 __all__ = [
     "Base",
     "Paper",
@@ -603,6 +678,7 @@ __all__ = [
     "CandidateGroupClaim",
     "Signal",
     "SignalClaim",
+    "ExtractJob",
     "PaperStatus",
     "SessionType",
     "BlockName",
@@ -613,4 +689,6 @@ __all__ = [
     "ExtractionSource",
     "SignalStatus",
     "ClaimAddition",
+    "JobType",
+    "JobStatus",
 ]
