@@ -5,6 +5,7 @@
 // ============================================================================
 
 import { useState, useEffect, useCallback } from "react"
+import { useSearchParams } from "react-router-dom"
 import {
   ArrowLeft,
   Check,
@@ -13,6 +14,8 @@ import {
   FileText,
   AlertTriangle,
   GitBranch,
+  FlaskConical,
+  Filter,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -70,8 +73,10 @@ function formatCrossPaper(cross: boolean | null | undefined) {
 // ============================================================================
 
 export default function Adjudication() {
+  const [searchParams] = useSearchParams()
   const [view, setView] = useState<View>({ mode: "list" })
   const [refreshKey, setRefreshKey] = useState(0)
+  const initialRunId = searchParams.get("run_id") ?? ""
 
   // 列表视图: 跳转到单卡详判
   const goDetail = useCallback((groupId: string) => {
@@ -88,7 +93,7 @@ export default function Adjudication() {
     return <DetailView groupId={view.groupId} onBack={goBack} />
   }
 
-  return <ListView key={refreshKey} onGoDetail={goDetail} />
+  return <ListView key={refreshKey} onGoDetail={goDetail} initialRunId={initialRunId} />
 }
 
 // ============================================================================
@@ -97,23 +102,29 @@ export default function Adjudication() {
 
 type FilterTab = "all" | "pending" | "accepted" | "rejected"
 
-function ListView({ onGoDetail }: { onGoDetail: (id: string) => void }) {
+function ListView({ onGoDetail, initialRunId }: { onGoDetail: (id: string) => void; initialRunId?: string }) {
   const [groups, setGroups] = useState<CandidateGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<FilterTab>("all")
   const [rejectingId, setRejectingId] = useState<string | null>(null)
+  const [runId, setRunId] = useState<string>(initialRunId ?? "")  // B2: 按 run_id 筛选
+  const [runIds, setRunIds] = useState<string[]>([])              // B2: 可用 run_id 列表
 
   const fetchGroups = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await apiGet<CandidateGroup[]>("/adjudication/candidate-groups")
+      const params = runId ? `?run_id=${encodeURIComponent(runId)}` : ""
+      const data = await apiGet<CandidateGroup[]>(`/adjudication/candidate-groups${params}`)
       setGroups(data)
+      // 提取不重复 run_id 列表
+      const ids = [...new Set(data.map((g) => g.run_id).filter(Boolean))]
+      setRunIds(ids as string[])
     } catch {
       toast.error("获取候选组列表失败")
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [runId])
 
   useEffect(() => {
     fetchGroups()
@@ -152,10 +163,36 @@ function ListView({ onGoDetail }: { onGoDetail: (id: string) => void }) {
   return (
     <div className="p-6 space-y-4">
       {/* 区域标题 */}
-      <h1 className="text-xl font-bold tracking-tight">裁决面板</h1>
-      <p className="text-sm text-muted-foreground -mt-2">
-        AI 召回候选局限组，由你来判断哪些是真实信号、哪些不成立。
-      </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight">裁决面板</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            AI 召回候选局限组，由你来判断哪些是真实信号、哪些不成立。
+          </p>
+        </div>
+
+        {/* B2: run_id 筛选 + 聚类入口 */}
+        <div className="flex items-center gap-2">
+          {runIds.length > 1 && (
+            <select
+              value={runId}
+              onChange={(e) => setRunId(e.target.value)}
+              className="rounded-md border border-input bg-background px-3 py-1.5 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+            >
+              <option value="">全部批次</option>
+              {runIds.map((id) => (
+                <option key={id} value={id}>
+                  批次 {id.slice(0, 8)}…
+                </option>
+              ))}
+            </select>
+          )}
+          <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-xs text-muted-foreground">
+            {filtered.length} 组
+          </span>
+        </div>
+      </div>
 
       {/* 筛选 tabs */}
       <div className="flex gap-2">
@@ -549,6 +586,19 @@ function DetailView({ groupId, onBack }: { groupId: string; onBack: () => void }
               </CardHeader>
 
               <CardContent className="space-y-3">
+                {/* ADR-7 命脉：研究对象 — 显眼展示，高视觉权重 */}
+                {claim.subject && (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-cyan-50 dark:bg-cyan-950/30 border border-cyan-200 dark:border-cyan-800">
+                    <FlaskConical className="h-4 w-4 text-cyan-600 dark:text-cyan-400 shrink-0" />
+                    <span className="text-xs font-medium text-cyan-700 dark:text-cyan-300">
+                      研究对象
+                    </span>
+                    <span className="text-sm font-semibold text-cyan-900 dark:text-cyan-200">
+                      {claim.subject}
+                    </span>
+                  </div>
+                )}
+
                 {/* quote 原文全文: 最大视觉块, 核心判断依据 */}
                 <blockquote className={cn(
                   "border-l-3 pl-4 py-2 bg-muted/30 rounded-r text-sm leading-relaxed whitespace-pre-wrap break-words",

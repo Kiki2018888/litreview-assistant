@@ -474,6 +474,8 @@ export interface ClaimInfo {
   context_summary: string | null
   claim_form: string | null
   quote_status: string | null
+  /** ADR-7 命脉：研究对象（如 "iPSC-derived RPE cells"） */
+  subject: string | null
   added_by?: string
   added_at?: string
 }
@@ -509,4 +511,82 @@ export interface Signal {
 /** 信号详情（含 claims） */
 export interface SignalDetail extends Signal {
   claims: ClaimInfo[]
+}
+
+// ---------------------------------------------------------------------------
+// Claims 抽取 Job（Step 6）
+// ---------------------------------------------------------------------------
+
+/** claims 抽取 Job 创建请求 */
+export interface ClaimsExtractStartRequest {
+  model?: string | null
+  force?: boolean
+}
+
+/** claims 抽取 Job 创建响应 */
+export interface ClaimsExtractStartResponse {
+  job_id: string
+  project_id: string
+  status: string
+  pending_paper_count: number
+  model: string
+  estimate: Record<string, unknown>
+}
+
+/** Job 状态响应 */
+export interface JobStatusResponse {
+  job_id: string
+  project_id: string
+  status: string
+  total_paper_count: number
+  completed_count: number
+  failed_count: number
+  current_paper_id: string | null
+  current_paper_title: string | null
+  error_summary: Record<string, unknown> | null
+  created_at: string
+  updated_at: string
+}
+
+/** 耗时预估响应 */
+export interface ClaimsEstimateResponse {
+  paper_count: number
+  estimate: Record<string, unknown>
+}
+
+// ── Claims 抽取 SSE 事件 ──
+
+/** claims Job 状态变更事件 */
+export interface ClaimsJobStatusEvent extends SSEEvent {
+  type: 'job_status'
+  job_id: string
+  status: string
+}
+
+/** claims 单篇进度事件 */
+export interface ClaimsPaperProgressEvent extends SSEEvent {
+  type: 'paper_progress'
+  paper_id: string
+  title: string
+  index: number
+  total: number
+  status: 'extracting' | 'completed' | 'failed'
+  error?: string
+}
+
+/** claims Job 完成事件 */
+export interface ClaimsJobDoneEvent extends SSEEvent {
+  type: 'job_done'
+  job_id: string
+  succeeded: number
+  failed: number
+  total: number
+  status: string
+  message?: string
+}
+
+/** claims 抽取错误事件 */
+export interface ClaimsJobErrorEvent extends SSEEvent {
+  type: 'error'
+  message: string
 }

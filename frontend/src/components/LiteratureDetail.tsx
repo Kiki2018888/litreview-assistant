@@ -12,6 +12,8 @@ import {
   ChevronDown,
   ChevronUp,
   MessageSquare,
+  Gavel,
+  Clock,
 } from "lucide-react"
 import { toast } from "sonner"
 import { cn } from "../lib/utils"
@@ -66,6 +68,13 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
   const [extracting, setExtracting] = useState(false)
   const [extractProgress, setExtractProgress] = useState<string>("")
 
+  // ── Claims 提取状态（A1 + A3 + A4） ──
+  const [claimsExtracting, setClaimsExtracting] = useState(false)
+  const [claimsProgress, setClaimsProgress] = useState<string>("")
+  const [claimsEstimate, setClaimsEstimate] = useState<string | null>(null)
+  const [claimsJobId, setClaimsJobId] = useState<string | null>(null)
+  const { start: startClaimsSSE, abort: abortClaimsSSE } = useSSE()
+
   // ── 标签编辑 ──
   const [editingTags, setEditingTags] = useState(false)
   const [tagInput, setTagInput] = useState("")
@@ -101,10 +110,11 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
   useEffect(() => {
     fetchDetail()
     return () => {
-      // 组件卸载时取消提取 SSE
+      // 组件卸载时取消所有 SSE
       abortExtract()
+      abortClaimsSSE()
     }
-  }, [fetchDetail, abortExtract])
+  }, [fetchDetail, abortExtract, abortClaimsSSE])
 
   // ── 操作：重新解析 ──
   const handleReparse = useCallback(async () => {
@@ -186,6 +196,90 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
       setExtracting(false)
     }
   }, [extractingSSE, extracting])
+
+  // ── A1: 提取 Claims（项目级 Job，防重抽自动跳过） ──
+  const handleExtractClaims = useCallback(async () => {
+    if (!paper || claimsExtracting) return
+    const projectId = paper.project_id
+    if (!projectId) {
+      toast.error("该文献未关联项目，请先归入项目再提取 Claims")
+      return
+    }
+
+    setClaimsExtracting(true)
+    setClaimsProgress("正在创建提取任务…")
+    setClaimsEstimate(null)
+
+    try {
+      // A4: 先获取耗时预估
+      const estRes = await apiGet<{ paper_count: number; estimate: Record<string, unknown> }>(
+        `/claims/estimate?paper_count=1`
+      )
+      const est = estRes.estimate as Record<string, string>
+      if (est.total_minutes) {
+        const mins = parseFloat(est.total_minutes)
+        if (mins > 5) {
+          setClaimsEstimate(`预计约 ${Math.round(mins)} 分钟（论断抽取推荐用快模型如 deepseek-v4-flash）`)
+        } else {
+          setClaimsEstimate(`预计约 ${Math.round(mins)} 分钟`)
+        }
+      }
+
+      // 创建 Job
+      const startRes = await apiPost<{
+        job_id: string; status: string; pending_paper_count: number; model: string; estimate: Record<string, unknown>
+      }>(`/projects/${projectId}/claims-extract/start`, { force: false })
+
+      setClaimsJobId(startRes.job_id)
+      setClaimsProgress(`已提交任务 · ${startRes.pending_paper_count} 篇待处理 · 模型: ${startRes.model}`)
+
+      // A3: SSE 订阅进度
+      startClaimsSSE({
+        url: `/projects/${projectId}/claims-extract/subscribe?job_id=${startRes.job_id}`,
+        method: "GET",
+        disableRetry: true,
+        maxRetries: 0,
+        onEvent: (event) => {
+          switch (event.type) {
+            case "job_status":
+              setClaimsProgress(`任务状态: ${event.status as string}`)
+              break
+            case "paper_progress": {
+              const idx = event.index as number
+              const tot = event.total as number
+              const t = event.title as string
+              const st = event.status as string
+              setClaimsProgress(`第 ${idx}/${tot} 篇 · ${t?.slice(0, 50)} · ${st === "completed" ? "✓" : st === "failed" ? "✗" : "…"}`)
+              break
+            }
+            case "error":
+              setClaimsProgress(`错误: ${event.message as string}`)
+              toast.error(event.message as string)
+              break
+            case "job_done": {
+              const ok = event.succeeded as number
+              const fail = event.failed as number
+              setClaimsProgress(`抽取完成 · 成功 ${ok} 篇${fail > 0 ? `，失败 ${fail} 篇` : ""}`)
+              toast.success(`Claims 抽取完成: ${ok}/${(ok + fail)} 篇成功`)
+              fetchDetail()
+              onRefresh?.()
+              break
+            }
+          }
+        },
+        onError: (msg) => {
+          setClaimsProgress(`连接失败: ${msg}`)
+          toast.error(msg)
+        },
+        onDone: () => {
+          setClaimsExtracting(false)
+        },
+      })
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "创建 Claims 提取任务失败")
+      setClaimsExtracting(false)
+    }
+  }, [paper, claimsExtracting, startClaimsSSE, fetchDetail, onRefresh])
 
   // ── 操作：翻译摘要 ──
 
@@ -378,6 +472,21 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
             <span className="hidden sm:inline">{extracting ? "提取中…" : "提取摘要"}</span>
           </button>
 
+          {/* A1: 提取 Claims */}
+          <button
+            onClick={handleExtractClaims}
+            disabled={claimsExtracting || !paper}
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-950/30 transition-colors disabled:opacity-40"
+            title="AI 提取论断（Claims）用于局限分析"
+          >
+            {claimsExtracting ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Gavel className="h-3.5 w-3.5" />
+            )}
+            <span className="hidden sm:inline">{claimsExtracting ? "提取中…" : "提取Claims"}</span>
+          </button>
+
           {/* 翻译 */}
           <button
             onClick={handleTranslate}
@@ -427,6 +536,27 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             {extractProgress}
           </span>
+        </div>
+      )}
+
+      {/* A3: Claims 提取 SSE 进度条 */}
+      {claimsExtracting && (
+        <div className="space-y-0 shrink-0">
+          <div className="px-4 py-2 bg-purple-50 dark:bg-purple-950/30 text-xs text-purple-700 dark:text-purple-300">
+            <span className="inline-flex items-center gap-1.5">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              {claimsProgress}
+            </span>
+          </div>
+          {/* A4: 模型耗时提示 */}
+          {claimsEstimate && (
+            <div className="px-4 py-1.5 bg-amber-50 dark:bg-amber-950/20 text-[0.65rem] text-amber-700 dark:text-amber-400 border-b border-amber-100 dark:border-amber-900/50">
+              <span className="inline-flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                {claimsEstimate}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
