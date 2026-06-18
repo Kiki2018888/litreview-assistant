@@ -793,6 +793,7 @@ class LimitationClusterResponse(BaseModel):
     """局限聚类 API 响应."""
     model_config = {"protected_namespaces": ()}
     project_id: str
+    run_id: str = ""               # Step5: 落库后返回批次 ID，空串表示未落库
     total_claims: int
     total_candidate_groups: int
     model_used: str
@@ -821,12 +822,14 @@ async def cluster_limitations(
     2. 读取该项目下所有 is_limitation 的 claims
     3. 按 topic 确定性分桶
     4. 每个 topic 内调 LLM 做分组辅助
-    5. 返回候选组列表 + evidence（不落库；落库是 Step5）
+    5. 聚类完成后自动落库（candidate_groups + candidate_group_claims）
+    6. 返回候选组列表 + evidence + run_id
 
     ADR-7 合规：
     - 输出为候选组 + 完整证据清单，无 signal_name / confidence
     - 每条 evidence 含 subject（区分 "RPE65 vs 光感受器"）
     - 裁决状态 = pending，等待人裁决
+    - 不碰 signals 表（信号由人裁决后产生）
 
     超时处理：
     - 快模型 < 30秒：同步返回结果
@@ -845,6 +848,7 @@ async def cluster_limitations(
     if not paper_ids:
         return LimitationClusterResponse(
             project_id=project_id,
+            run_id="",
             total_claims=0,
             total_candidate_groups=0,
             model_used=get_model_name(),
@@ -853,6 +857,7 @@ async def cluster_limitations(
         )
 
     from backend.services.limitation_clusterer import run_clustering
+    from backend.services.cluster_writer import save_clustering_result
 
     logger.info("开始局限聚类: project_id=%s", project_id)
 
@@ -881,6 +886,17 @@ async def cluster_limitations(
             status_code=500,
             detail=f"局限聚类失败: {str(exc)[:300]}",
         )
+
+    # Step5: 聚类完成后自动落库（事务性写入 candidate_groups + candidate_group_claims）
+    run_id = ""
+    if result.get("groups"):
+        try:
+            run_id = save_clustering_result(result)
+            logger.info("聚类结果已落库: run_id=%s", run_id[:12])
+        except Exception as exc:
+            logger.exception("落库失败（聚类结果仍返回）: %s", exc)
+            # 落库失败不阻塞 API 响应，但 run_id 留空提示
+    result["run_id"] = run_id
 
     return LimitationClusterResponse(**result)
 
