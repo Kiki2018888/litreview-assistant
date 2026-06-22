@@ -469,7 +469,7 @@ async def reparse_paper(
             paper.status = PaperStatus.EXTRACT_FAILED.value
             paper.last_error = "检测到扫描版 PDF"
         else:
-            paper.status = PaperStatus.PENDING.value
+            paper.status = PaperStatus.COMPLETED.value
             paper.last_error = None
     except Exception as exc:
         paper.status = PaperStatus.FAILED.value
