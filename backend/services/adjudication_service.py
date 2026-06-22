@@ -129,6 +129,8 @@ def get_candidate_group_claims(
             "quote": claim.quote,
             "quote_page": claim.quote_page,
             "topic": claim.topic,
+            "subject": getattr(claim, "subject", None),
+            "is_limitation": bool(getattr(claim, "is_limitation", False)),
             "context_summary": ctx,
             "claim_form": claim.claim_form,
             "quote_status": claim.quote_status,
