@@ -23,6 +23,11 @@ def _has_column(table: str, column: str) -> bool:
 
 
 def upgrade() -> None:
+    # 幂等守卫：如果 claims 已有 quote_status 列（含 create_all 创建的全量列）
+    # 则跳过此迁移，避免后半段 DROP TABLE claims 丢失后续 migration 加的列
+    if _has_column("claims", "quote_status"):
+        return
+
     with op.batch_alter_table("claims", schema=None) as batch_op:
         if not _has_column("claims", "quote_status"):
             batch_op.add_column(
@@ -73,7 +78,7 @@ def upgrade() -> None:
         """
     )
     # Copy data from old table to new
-    op.execute("INSERT OR IGNORE INTO _claims_new SELECT *, NULL, NULL, NULL FROM claims")
+    op.execute("INSERT OR IGNORE INTO _claims_new SELECT * FROM claims")
     op.execute("DROP TABLE claims")
     op.execute("ALTER TABLE _claims_new RENAME TO claims")
     # Recreate indexes

@@ -22,6 +22,7 @@ from backend.models.schemas import (
     SignalClaimResponse,
     CandidateGroupResponse,
 )
+from backend.models.tables import CandidateGroup
 from backend.services.adjudication_service import (
     accept_group,
     reject_group,
@@ -58,9 +59,7 @@ def get_candidate_group(candidate_group_id: str):
     """候选组详情（含 claims）."""
     db = SessionLocal()
     try:
-        cg = db.query(
-            __import__("backend.models.tables", fromlist=["CandidateGroup"]).CandidateGroup
-        ).get(candidate_group_id)
+        cg = db.query(CandidateGroup).get(candidate_group_id)
         if not cg:
             raise HTTPException(status_code=404, detail="候选组不存在")
 

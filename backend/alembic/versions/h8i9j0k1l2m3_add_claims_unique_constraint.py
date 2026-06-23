@@ -24,21 +24,20 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """创建 (paper_id, quote_hash) 唯一索引（SQLite 下的唯一约束等价形式）."""
     bind = op.get_bind()
-    raw_conn = bind.connection.connection  # type: ignore[union-attr]
 
     # 幂等检查
-    existing = raw_conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND name='uq_claims_paper_quote_hash'"
+    existing = bind.execute(
+        sa.text("SELECT name FROM sqlite_master WHERE type='index' AND name='uq_claims_paper_quote_hash'")
     ).fetchall()
     if existing:
-        print("[Migration h8i9j0k1l2m3] 唯一索引已存在，跳过.")
         return
 
-    raw_conn.execute(
-        "CREATE UNIQUE INDEX uq_claims_paper_quote_hash ON claims (paper_id, quote_hash)"
+    op.create_index(
+        "uq_claims_paper_quote_hash",
+        "claims",
+        ["paper_id", "quote_hash"],
+        unique=True,
     )
-    raw_conn.commit()
-    print("[Migration h8i9j0k1l2m3] (paper_id, quote_hash) 唯一索引已创建.")
 
 
 def downgrade() -> None:

@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.engine.reflection import Inspector
 
 revision: str = "c3d4e5f6a7b8"
 down_revision: Union[str, None] = "b2c3d4e5f6a7"
@@ -17,6 +18,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # 幂等守卫：如果 claims 表已存在（通常通过 fallback create_all 创建），则跳过
+    conn = op.get_bind()
+    inspector = Inspector.from_engine(conn)
+    if "claims" in inspector.get_table_names():
+        return
     op.create_table(
         "claims",
         sa.Column("id", sa.String(length=36), nullable=False),
