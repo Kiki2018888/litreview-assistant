@@ -15,7 +15,6 @@ import {
   AlertTriangle,
   GitBranch,
   FlaskConical,
-  Filter,
 } from "lucide-react"
 import { toast } from "sonner"
 

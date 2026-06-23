@@ -181,7 +181,6 @@ export default function Literature() {
 
     // 使用 no-cache 避免浏览器缓存
     try {
-      const base = "http://localhost:8000/api/v1"  // 因为前端 dev 代理 /api/v1，走相对路径
       const ctrl = new AbortController()
       const timeout = setTimeout(() => ctrl.abort(), 30000) // 28s 后超时
       const res = await fetch(`/api/v1/projects/${projectFilter}/clustering/limitation`, {

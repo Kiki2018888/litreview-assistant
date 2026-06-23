@@ -72,7 +72,7 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
   const [claimsExtracting, setClaimsExtracting] = useState(false)
   const [claimsProgress, setClaimsProgress] = useState<string>("")
   const [claimsEstimate, setClaimsEstimate] = useState<string | null>(null)
-  const [claimsJobId, setClaimsJobId] = useState<string | null>(null)
+  const [_claimsJobId, setClaimsJobId] = useState<string | null>(null)
   const { start: startClaimsSSE, abort: abortClaimsSSE } = useSSE()
 
   // ── 标签编辑 ──
