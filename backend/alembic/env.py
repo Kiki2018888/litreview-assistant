@@ -52,6 +52,9 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        connection = connection.execution_options(
+            isolation_level="AUTOCOMMIT"
+        )
         connection.execute(sa.text("PRAGMA foreign_keys=ON"))
 
         context.configure(
@@ -59,25 +62,7 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
         )
 
-        try:
-            with context.begin_transaction():
-                context.run_migrations()
-        except Exception as exc:
-            # SQLite 的 CREATE TRIGGER / CREATE VIRTUAL TABLE 等 DDL
-            # 会隐式提交事务（自动 auto-commit），破坏 context.begin_transaction()
-            # 的事务边界。迁移脚本在 upgrade() 末尾已手动写入 alembic_version，
-            # 此处 Alembic 重复写入会触发 UNIQUE constraint 错误。
-            # 仅过滤此类版本记录冲突，其他异常正常抛出。
-            err_msg = str(exc)
-            is_sqlite_version_error = (
-                "alembic_version" in err_msg
-                and (
-                    "UNIQUE constraint" in err_msg
-                    or "0 found" in err_msg
-                )
-            )
-            if not is_sqlite_version_error:
-                raise
+        context.run_migrations()
 
 
 if context.is_offline_mode():

@@ -47,38 +47,21 @@ def _get_alembic_cfg_path() -> Path:
 
 def _run_migrations() -> None:
     """执行 Alembic 迁移，确保数据库结构为最新版本."""
-    try:
-        from alembic import command
-        from alembic.config import Config
+    from alembic import command
+    from alembic.config import Config
 
-        ini_path = _get_alembic_cfg_path()
-        if not ini_path.exists():
-            logger.warning("alembic.ini 未找到，跳过数据库迁移")
-            return
+    ini_path = _get_alembic_cfg_path()
+    if not ini_path.exists():
+        logger.warning("alembic.ini 未找到，跳过数据库迁移")
+        return
 
-        alembic_cfg = Config(str(ini_path))
+    alembic_cfg = Config(str(ini_path))
+    if getattr(sys, "frozen", False):
+        alembic_scripts = Path(sys._MEIPASS) / "alembic"
+        alembic_cfg.set_main_option("script_location", str(alembic_scripts))
 
-        # 生产模式下 script_location 指向 _MEIPASS/alembic/
-        if getattr(sys, "frozen", False):
-            alembic_scripts = Path(sys._MEIPASS) / "alembic"  # type: ignore[attr-defined]
-            alembic_cfg.set_main_option("script_location", str(alembic_scripts))
-
-        command.upgrade(alembic_cfg, "head")
-        logger.info("数据库迁移完成（Alembic）")
-    except Exception:
-        logger.exception("Alembic 迁移失败，尝试 fallback（create_all + FTS5）")
-        try:
-            from backend.services.db import init_db
-            init_db()
-            logger.info("已通过 create_all 创建数据表（fallback）")
-
-            # 补齐 FTS5 虚拟表与触发器（init_db 不创建 FTS5）
-            from backend.api.v1.data import _init_fts5
-            _init_fts5()
-            logger.info("FTS5 虚拟表和触发器已创建（fallback）")
-        except Exception:
-            logger.exception("数据库初始化完全失败，终止启动")
-            sys.exit(1)
+    command.upgrade(alembic_cfg, "head")
+    logger.info("数据库迁移完成（Alembic upgrade head）")
 
 
 @asynccontextmanager

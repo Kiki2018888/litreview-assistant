@@ -8,7 +8,6 @@ Create Date: 2026-06-05 10:58:07.165926
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-import sqlite3
 from alembic import op
 
 
@@ -289,24 +288,6 @@ def upgrade() -> None:
         """
     )
 
-    # ------------------------------------------------------------------
-    # 12. 手动写入 alembic_version（SQLite 隐式提交补偿）
-    # SQLite 的 CREATE TRIGGER / CREATE VIRTUAL TABLE 等 DDL 会隐式提交
-    # 当前事务，破坏 Alembic 的 context.begin_transaction() 事务边界。
-    # op.execute() 复用 Alembic 连接，版本写入仍可能随事务回滚丢失。
-    # 此处通过独立 sqlite3 连接直接写入，确保版本记录持久化。
-    # Alembic 后续重复写入产生的 UNIQUE constraint 错误由 env.py 过滤。
-    # ------------------------------------------------------------------
-    engine = op.get_bind().engine
-    db_url = str(engine.url)
-    # SQLite URL 格式: sqlite:///path/to/db (Windows 绝对路径为 sqlite:///C:/...)
-    db_path = db_url.replace("sqlite:///", "", 1)
-    _conn = sqlite3.connect(db_path)
-    _conn.execute("DELETE FROM alembic_version WHERE version_num IS NOT NULL")
-    _conn.execute("INSERT INTO alembic_version (version_num) VALUES ('ec9feb3c397e')")
-    _conn.commit()
-    _conn.close()
-
 
 def downgrade() -> None:
     """回退到空 schema."""
@@ -335,13 +316,8 @@ def downgrade() -> None:
     op.drop_table("paper_blocks")
     op.drop_table("batches")
 
-    # 手动清理 alembic_version（SQLite DDL 隐式提交导致 Alembic 的版本删除失效）
-    engine = op.get_bind().engine
-    db_path = str(engine.url).replace("sqlite:///", "", 1)
-    _conn = sqlite3.connect(db_path)
-    _conn.execute("DELETE FROM alembic_version WHERE version_num = 'ec9feb3c397e'")
-    _conn.commit()
-    _conn.close()
+
+
 
 
 
