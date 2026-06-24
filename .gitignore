@@ -122,3 +122,10 @@ _test_contract_vuln.py
 
 # ---------- 可重新生成的开发期产物 ----------
 outputs/
+
+# ---------- 根目录临时诊断产物 ----------
+/_*.py
+/_*.txt
+/_*.bin
+/$null
+/screenshot_*.png
