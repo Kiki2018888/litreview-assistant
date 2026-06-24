@@ -57,13 +57,37 @@ class ResolvedApiConfig:
     model: str
 
 
-def infer_provider(api_key: str) -> tuple[str, str]:
-    """根据 Key 前缀推断 provider 与默认 base_url."""
+def _provider_from_base_url(api_base_url: str) -> Optional[tuple[str, str]]:
+    """从 endpoint URL 识别 provider（auto 模式优先于 key 前缀）."""
+    url = api_base_url.strip().lower().rstrip("/")
+    normalized = api_base_url.strip().rstrip("/")
+    if "deepseek.com" in url:
+        return PROVIDER_DEEPSEEK, normalized
+    if "kimi.com/coding" in url:
+        return PROVIDER_KIMI_CODING, normalized
+    if "moonshot.cn" in url:
+        return PROVIDER_MOONSHOT, normalized
+    return None
+
+
+def infer_provider(
+    api_key: str,
+    api_base_url: Optional[str] = None,
+) -> tuple[str, str]:
+    """auto 模式下推断 provider 与 base_url.
+
+    优先级：显式 base_url → key 前缀（仅 sk-kimi- 可唯一识别）→ 保守 custom。
+    普通 sk- 前缀无法区分 Moonshot / DeepSeek，不得据此猜 moonshot。
+    """
+    override = (api_base_url or "").strip()
+    if override:
+        by_url = _provider_from_base_url(override)
+        if by_url:
+            return by_url
+
     key = (api_key or "").strip()
     if key.startswith("sk-kimi-"):
         return PROVIDER_KIMI_CODING, DEFAULT_KIMI_CODING_BASE_URL
-    if key.startswith("sk-"):
-        return PROVIDER_MOONSHOT, DEFAULT_MOONSHOT_BASE_URL
     return PROVIDER_CUSTOM, DEFAULT_MOONSHOT_BASE_URL
 
 
@@ -83,7 +107,7 @@ def default_model_for_provider(provider: str) -> str:
     if provider == PROVIDER_KIMI_CODING:
         return "kimi-k2.6"
     if provider == PROVIDER_DEEPSEEK:
-        return "deepseek-v4-pro"
+        return "deepseek-v4-flash"
     return "moonshot-v1-128k"
 
 
@@ -120,16 +144,19 @@ def resolve_api_config(
     if provider not in VALID_PROVIDERS:
         provider = PROVIDER_AUTO
 
+    override_url = (api_base_url or "").strip()
+
     if provider == PROVIDER_AUTO:
-        resolved_provider, base_url = infer_provider(key)
+        resolved_provider, base_url = infer_provider(key, api_base_url=override_url or None)
     else:
+        # 用户显式选择的 provider 直接使用，不靠 key 前缀猜测
         resolved_provider = provider
         base_url = default_base_url_for_provider(provider)
 
-    override_url = (api_base_url or "").strip()
     if override_url:
         base_url = override_url.rstrip("/")
 
+    # 优先 settings.default_model；仅在为空时才用 provider 推荐默认
     model = (api_model or "").strip() or default_model_for_provider(resolved_provider)
 
     return ResolvedApiConfig(
@@ -171,15 +198,19 @@ def preview_config(
 ) -> tuple[str, str]:
     """预览 provider 与 base_url（Key 为空时仅按 provider 推断）."""
     provider = (api_provider or PROVIDER_AUTO).strip().lower()
-    if provider == PROVIDER_AUTO and api_key and api_key.strip():
-        p, url = infer_provider(api_key.strip())
-    elif provider == PROVIDER_AUTO:
-        p, url = PROVIDER_MOONSHOT, DEFAULT_MOONSHOT_BASE_URL
+    override = (api_base_url or "").strip()
+    if provider == PROVIDER_AUTO:
+        if api_key and api_key.strip():
+            p, url = infer_provider(api_key.strip(), api_base_url=override or None)
+        elif override:
+            by_url = _provider_from_base_url(override)
+            p, url = by_url if by_url else (PROVIDER_CUSTOM, DEFAULT_MOONSHOT_BASE_URL)
+        else:
+            p, url = PROVIDER_CUSTOM, DEFAULT_MOONSHOT_BASE_URL
     else:
         p = provider
         url = default_base_url_for_provider(provider)
 
-    override = (api_base_url or "").strip()
     if override:
         url = override.rstrip("/")
     return p, url

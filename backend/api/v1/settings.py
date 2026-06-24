@@ -33,6 +33,7 @@ from backend.services.api_provider import (
     VALID_PROVIDERS,
     available_models_for_provider,
     infer_provider,
+    load_runtime_config_from_db,
     resolve_api_config,
 )
 from backend.services.db import SessionLocal
@@ -302,41 +303,36 @@ def update_settings(body: SettingUpdate):
 
 @router.post("/test", response_model=ApiKeyTestResponse)
 async def test_api_key(body: ApiKeyTestRequest):
-    """测试 API Key 是否有效（按 provider 解析 endpoint 后请求）."""
+    """测试 API Key 是否有效（与 Claims 提取共用 load_runtime_config_from_db）."""
     from openai import APIStatusError, AsyncOpenAI
 
-    if body.api_key and body.api_key.strip():
-        test_key = body.api_key.strip()
-        provider = (body.api_provider or PROVIDER_AUTO).strip().lower()
-        base_url_override = body.api_base_url
+    # 与提取路径统一：已存储 Key 时直接 load_runtime_config_from_db()
+    if not (body.api_key and body.api_key.strip()):
+        try:
+            cfg = load_runtime_config_from_db()
+        except ValueError as exc:
+            return ApiKeyTestResponse(valid=False, message=str(exc))
     else:
+        # 测试输入框中的新 Key：仍用 resolve_api_config，但 model 取自 DB default_model
         db = SessionLocal()
         try:
             row = _ensure_settings_row(db)
-            test_key = _get_decrypted_api_key()
-            if not test_key:
-                return ApiKeyTestResponse(valid=False, message="API Key 未配置")
-            provider = body.api_provider or row.api_provider or PROVIDER_AUTO
-            base_url_override = body.api_base_url if body.api_base_url else row.api_base_url
+            test_key = body.api_key.strip()
+            provider = (body.api_provider or row.api_provider or PROVIDER_AUTO).strip().lower()
+            base_url = body.api_base_url if body.api_base_url else row.api_base_url
+            try:
+                cfg = resolve_api_config(
+                    test_key,
+                    api_provider=provider,
+                    api_base_url=base_url,
+                    api_model=row.default_model,
+                )
+            except ValueError as exc:
+                return ApiKeyTestResponse(valid=False, message=str(exc))
         finally:
             db.close()
 
-    try:
-        cfg = resolve_api_config(
-            test_key,
-            api_provider=provider,
-            api_base_url=base_url_override,
-            api_model=None,
-        )
-    except ValueError as exc:
-        return ApiKeyTestResponse(valid=False, message=str(exc))
-
-    db = SessionLocal()
-    try:
-        row = _ensure_settings_row(db)
-        model = row.default_model or cfg.model
-    finally:
-        db.close()
+    model = cfg.model
 
     client = AsyncOpenAI(
         api_key=cfg.api_key,

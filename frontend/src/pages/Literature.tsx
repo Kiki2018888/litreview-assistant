@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { useSearchParams, useNavigate } from "react-router-dom"
 import FileUploader from "../components/FileUploader"
 import LiteratureList from "../components/LiteratureList"
@@ -20,16 +20,24 @@ type ChatMode =
   | null
 
 // ============================================================================
+// 常量
+// ============================================================================
+
+const LAST_PROJECT_KEY = "ra_last_project_id"
+
+// ============================================================================
 // Literature 页面
 // ============================================================================
 
 export default function Literature() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigation = useNavigate()
+  const leftPanelRef = useRef<HTMLDivElement>(null)
   const projectFilter = searchParams.get("project_id") ?? ""
 
   const [refreshKey, setRefreshKey] = useState(0)
   const [projects, setProjects] = useState<Project[]>([])
+  const [pendingClaimsCount, setPendingClaimsCount] = useState<number | null>(null)
 
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [detailPaperId, setDetailPaperId] = useState<string | null>(null)
@@ -52,6 +60,33 @@ export default function Literature() {
       .catch(() => setProjects([]))
   }, [refreshKey])
 
+  // 默认选中项目（记住上次选择，否则选默认项目）
+  useEffect(() => {
+    if (projects.length === 0) return
+    if (searchParams.get("project_id")) return
+
+    const saved = localStorage.getItem(LAST_PROJECT_KEY)
+    const validSaved = saved && projects.some((p) => p.id === saved)
+    const defaultProject = projects.find((p) => p.is_default) ?? projects[0]
+    const id = validSaved ? saved! : defaultProject?.id
+    if (id) {
+      setSearchParams({ project_id: id })
+    }
+  }, [projects, searchParams, setSearchParams])
+
+  // 加载待抽 claims 文献数
+  useEffect(() => {
+    if (!projectFilter) {
+      setPendingClaimsCount(null)
+      return
+    }
+    apiGet<{ pending_count: number }>(
+      `/projects/${projectFilter}/claims-extract/pending-count`
+    )
+      .then((res) => setPendingClaimsCount(res.pending_count))
+      .catch(() => setPendingClaimsCount(null))
+  }, [projectFilter, refreshKey])
+
   // 清理 SSE
   useEffect(() => {
     return () => {
@@ -62,8 +97,10 @@ export default function Literature() {
   const handleProjectFilterChange = useCallback(
     (projectId: string) => {
       if (projectId) {
+        localStorage.setItem(LAST_PROJECT_KEY, projectId)
         setSearchParams({ project_id: projectId })
       } else {
+        localStorage.removeItem(LAST_PROJECT_KEY)
         setSearchParams({})
       }
     },
@@ -82,6 +119,18 @@ export default function Literature() {
   const handleRefresh = useCallback(() => {
     setRefreshKey((k) => k + 1)
   }, [])
+
+  const handleDeleted = useCallback(
+    (deletedIds: string[]) => {
+      if (detailPaperId && deletedIds.includes(detailPaperId)) {
+        setDetailPaperId(null)
+        setChatMode(null)
+      }
+      handleRefresh()
+      leftPanelRef.current?.scrollTo({ top: 0 })
+    },
+    [detailPaperId, handleRefresh]
+  )
 
   const handleOpenChat = useCallback((paperId: string) => {
     setChatMode({ mode: "single", paperId })
@@ -138,7 +187,7 @@ export default function Literature() {
               setClaimsProgress(`任务状态: ${event.status as string}`)
               break
             case "paper_progress": {
-              const idx = event.index as number
+              const idx = event.current as number
               const tot = event.total as number
               const t = event.title as string
               const st = event.status as string
@@ -240,6 +289,7 @@ export default function Literature() {
   return (
     <div className="flex h-full">
       <div
+        ref={leftPanelRef}
         className="flex flex-col min-w-0 overflow-y-auto p-6"
         style={{
           width: leftWidth,
@@ -262,18 +312,28 @@ export default function Literature() {
                 {projects.find((p) => p.id === projectFilter)?.name ?? "当前项目"}
               </div>
 
-              {/* A1: 提取 Claims */}
+              {/* A1: 批量提取 Claims */}
               <button
                 onClick={handleProjectExtractClaims}
                 disabled={claimsExtracting || clustering}
                 className="inline-flex items-center gap-1.5 rounded-md border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/30 px-3 py-1.5 text-xs font-medium text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-950/50 transition-colors disabled:opacity-40"
+                title={
+                  pendingClaimsCount !== null
+                    ? `本项目 ${pendingClaimsCount} 篇文献待抽取 Claims`
+                    : undefined
+                }
               >
                 {claimsExtracting ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
                   <Gavel className="h-3.5 w-3.5" />
                 )}
-                提取Claims
+                批量提取Claims(本项目)
+                {pendingClaimsCount !== null && (
+                  <span className="text-purple-500/80 dark:text-purple-400/80">
+                    · {pendingClaimsCount} 篇待抽
+                  </span>
+                )}
               </button>
 
               {/* A2: 分析局限（聚类） */}
@@ -343,7 +403,7 @@ export default function Literature() {
           projects={projects}
           projectFilter={projectFilter}
           onProjectFilterChange={handleProjectFilterChange}
-          onDeleted={handleRefresh}
+          onDeleted={handleDeleted}
         />
       </div>
 

@@ -53,15 +53,6 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    },
-    "publish": {
-      "provider": "github",
-      "owner": "Kiki2018888",
-      "repo": "ResearchAssistant",
-      "releaseType": "release"
     }
-  },
-  "dependencies": {
-    "electron-updater": "^6.8.9"
   }
 }

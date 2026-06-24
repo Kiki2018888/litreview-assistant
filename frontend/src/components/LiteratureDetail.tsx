@@ -245,7 +245,7 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
               setClaimsProgress(`任务状态: ${event.status as string}`)
               break
             case "paper_progress": {
-              const idx = event.index as number
+              const idx = event.current as number
               const tot = event.total as number
               const t = event.title as string
               const st = event.status as string

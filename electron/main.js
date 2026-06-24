@@ -11,7 +11,6 @@ const { spawn, execSync } = require('child_process');
 const path = require('path');
 const net = require('net');
 const fs = require('fs');
-const { autoUpdater } = require('electron-updater');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_PORT = 8000;
@@ -55,102 +54,6 @@ function ensureBackendLogStream() {
     backendLogStream.write(`\n--- backend started ${new Date().toISOString()} ---\n`);
   }
   return backendLogStream;
-}
-
-// ---------------------------------------------------------------------------
-// 自动更新（electron-updater）
-// 配置从 package.json build.publish 读取，无需手动 setFeedURL
-// ---------------------------------------------------------------------------
-
-/** 当前更新状态，通过 IPC 同步到前端 */
-let updateStatus = {
-  state: 'idle',          // idle | checking | available | downloading | downloaded | error | no-update
-  version: null,          // 新版本号（available/downloaded 时有值）
-  error: null,            // 错误信息（error 状态时有值）
-};
-
-/**
- * 向前端推送更新状态
- */
-function sendUpdateStatus() {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('update-status', updateStatus);
-  }
-}
-
-/**
- * 静默日志（仅写入 stderr，不弹窗打扰用户）
- * @param {string} message
- */
-function logUpdate(message) {
-  console.error(`[autoUpdater] ${message}`);
-}
-
-// 配置更新源（开发模式跳过检测，避免误触）
-if (!isDev) {
-  // 检查更新出错：静默（不打扰用户）
-  autoUpdater.on('error', (err) => {
-    logUpdate(`更新出错: ${err.message}`);
-    updateStatus = { state: 'error', version: null, error: err.message };
-    sendUpdateStatus();
-  });
-
-  // 开始检查更新
-  autoUpdater.on('checking-for-update', () => {
-    logUpdate('正在检查更新...');
-    updateStatus = { state: 'checking', version: null, error: null };
-    sendUpdateStatus();
-  });
-
-  // 没有可用更新（静默）
-  autoUpdater.on('update-not-available', (_info) => {
-    logUpdate('已是最新版本');
-    updateStatus = { state: 'no-update', version: null, error: null };
-    sendUpdateStatus();
-  });
-
-  // 有可用更新（后台自动下载）
-  autoUpdater.on('update-available', (info) => {
-    logUpdate(`发现新版本 v${info.version}，后台下载中...`);
-    updateStatus = { state: 'downloading', version: info.version, error: null };
-    sendUpdateStatus();
-  });
-
-  // 下载进度（向前端报告）
-  autoUpdater.on('download-progress', (progress) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('update-download-progress', {
-        percent: Math.round(progress.percent),
-      });
-    }
-  });
-
-  // 下载完成 → 提示用户重启
-  autoUpdater.on('update-downloaded', (info) => {
-    logUpdate(`v${info.version} 下载完成，等待用户确认重启`);
-    updateStatus = { state: 'downloaded', version: info.version, error: null };
-    sendUpdateStatus();
-
-    // 弹出提示框
-    dialog
-      .showMessageBox({
-        type: 'info',
-        title: '更新就绪',
-        message: `新版本 v${info.version} 已下载完成，是否立即重启以安装更新？`,
-        buttons: ['现在重启', '稍后'],
-        defaultId: 0,
-        cancelId: 1,
-      })
-      .then(({ response }) => {
-        if (response === 0) {
-          logUpdate('用户确认重启，安装更新...');
-          // 退出并安装
-          setImmediate(() => autoUpdater.quitAndInstall());
-        } else {
-          logUpdate('用户选择稍后重启');
-        }
-      });
-  });
 }
 
 /**
@@ -449,49 +352,10 @@ async function createMainWindow() {
 }
 
 ipcMain.handle('get-backend-port', () => backendPort);
-
-// ── 自动更新 IPC ──
 ipcMain.handle('get-app-version', () => app.getVersion());
-ipcMain.handle('get-update-status', () => updateStatus);
-
-// 手动触发更新检查
-ipcMain.handle('check-for-updates', async () => {
-  if (isDev) {
-    updateStatus = { state: 'error', version: null, error: '开发模式暂不支持更新检测' };
-    sendUpdateStatus();
-    return updateStatus;
-  }
-  updateStatus = { state: 'checking', version: null, error: null };
-  sendUpdateStatus();
-  try {
-    const result = await autoUpdater.checkForUpdates();
-    // checkForUpdates 返回 UpdateCheckResult；实际状态由事件驱动
-    return updateStatus;
-  } catch (err) {
-    logUpdate(`手动检查失败: ${err.message}`);
-    updateStatus = { state: 'error', version: null, error: err.message };
-    sendUpdateStatus();
-    return updateStatus;
-  }
-});
-
-// 用户确认后安装更新
-ipcMain.handle('install-update', () => {
-  autoUpdater.quitAndInstall();
-});
 
 app.whenReady().then(async () => {
   await createMainWindow();
-
-  // 启动后 5 秒静默检测更新（仅生产模式）
-  if (!isDev) {
-    setTimeout(() => {
-      logUpdate('启动后静默检测更新...');
-      autoUpdater.checkForUpdatesAndNotify().catch((err) => {
-        logUpdate(`静默检测失败: ${err.message}`);
-      });
-    }, 5000);
-  }
 
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {

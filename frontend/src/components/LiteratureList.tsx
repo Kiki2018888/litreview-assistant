@@ -84,7 +84,7 @@ interface LiteratureListProps {
   /** 项目筛选变化回调 */
   onProjectFilterChange?: (projectId: string) => void
   /** 删除成功后回调（刷新计数等） */
-  onDeleted?: () => void
+  onDeleted?: (deletedIds: string[]) => void
 }
 
 // ============================================================================
@@ -225,6 +225,14 @@ export default function LiteratureList({
     setPage(1)
   }, [projectFilter])
 
+  // 删除后若当前页超出范围，回退到最后一页
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(total / pageSize))
+    if (page > totalPages) {
+      setPage(totalPages)
+    }
+  }, [total, pageSize, page])
+
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const hasPrev = page > 1
   const hasNext = page < totalPages
@@ -264,10 +272,11 @@ export default function LiteratureList({
     try {
       await apiDelete(`/literature/${deleteTarget.id}`)
       toast.success("文献已删除")
+      const deletedId = deleteTarget.id
       setDeleteTarget(null)
       clearSelection()
       await fetchPapers()
-      onDeleted?.()
+      onDeleted?.([deletedId])
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "删除失败")
     } finally {
@@ -286,7 +295,7 @@ export default function LiteratureList({
       setBatchDeleteOpen(false)
       clearSelection()
       await fetchPapers()
-      onDeleted?.()
+      onDeleted?.(ids)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "批量删除失败")
     } finally {

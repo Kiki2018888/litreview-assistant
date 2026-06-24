@@ -23,10 +23,9 @@ interface PdfViewerProps {
 export default function PdfViewer({ filePath, pageCount, paperId }: PdfViewerProps) {
   const [zoom, setZoom] = useState(100)
   const [currentPage, setCurrentPage] = useState(1)
-  const [iframeError, setIframeError] = useState(false)
+  const [pdfError, setPdfError] = useState(false)
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
   const [loadingPdf, setLoadingPdf] = useState(false)
-  const iframeRef = useRef<HTMLIFrameElement>(null)
   const blobUrlRef = useRef<string | null>(null)
 
   const totalPages = pageCount && pageCount > 0 ? pageCount : 1
@@ -37,7 +36,7 @@ export default function PdfViewer({ filePath, pageCount, paperId }: PdfViewerPro
 
     const fetchPdf = async () => {
       setLoadingPdf(true)
-      setIframeError(false)
+      setPdfError(false)
       setBlobUrl(null)
 
       // 释放旧的 blob URL
@@ -54,7 +53,7 @@ export default function PdfViewer({ filePath, pageCount, paperId }: PdfViewerPro
             blobUrlRef.current = url
             if (!cancelled) setBlobUrl(url)
           } else {
-            if (!cancelled) setIframeError(true)
+            if (!cancelled) setPdfError(true)
           }
           return
         }
@@ -69,7 +68,7 @@ export default function PdfViewer({ filePath, pageCount, paperId }: PdfViewerPro
             blobUrlRef.current = url
             if (!cancelled) setBlobUrl(url)
           } else {
-            if (!cancelled) setIframeError(true)
+            if (!cancelled) setPdfError(true)
           }
           return
         }
@@ -88,7 +87,7 @@ export default function PdfViewer({ filePath, pageCount, paperId }: PdfViewerPro
           blobUrlRef.current = url
           setBlobUrl(url)
         } else {
-          setIframeError(true)
+          setPdfError(true)
         }
       } finally {
         if (!cancelled) setLoadingPdf(false)
@@ -149,11 +148,6 @@ export default function PdfViewer({ filePath, pageCount, paperId }: PdfViewerPro
     [goToPage]
   )
 
-  // ── iframe 加载错误处理 ──
-  const handleIframeError = useCallback(() => {
-    setIframeError(true)
-  }, [])
-
   // ── 无文件路径 ──
   if (!filePath && !paperId) {
     return (
@@ -177,6 +171,7 @@ export default function PdfViewer({ filePath, pageCount, paperId }: PdfViewerPro
 
   // 最终使用的 PDF URL
   const pdfUrl = blobUrl
+  const pdfSrc = pdfUrl ? `${pdfUrl}#page=${currentPage}&zoom=${zoom}` : null
 
   return (
     <div className="flex flex-col h-full">
@@ -261,9 +256,9 @@ export default function PdfViewer({ filePath, pageCount, paperId }: PdfViewerPro
         </div>
       </div>
 
-      {/* ── PDF 预览区 ── */}
+      {/* ── PDF 预览区（embed 在 Electron 下可渲染 blob PDF，iframe sandbox 不行） ── */}
       <div className="flex-1 relative bg-[#525659] dark:bg-[#1e1e1e]">
-        {iframeError || !pdfUrl ? (
+        {pdfError || !pdfSrc ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
             <AlertTriangle className="h-10 w-10 mb-3 opacity-40" />
             <p className="text-sm">PDF 预览不可用</p>
@@ -272,13 +267,11 @@ export default function PdfViewer({ filePath, pageCount, paperId }: PdfViewerPro
             </p>
           </div>
         ) : (
-          <iframe
-            ref={iframeRef}
-            src={`${pdfUrl}#page=${currentPage}&zoom=${zoom}`}
-            className="w-full h-full border-0"
-            onError={handleIframeError}
+          <embed
+            type="application/pdf"
+            src={pdfSrc}
+            className="absolute inset-0 h-full w-full border-0"
             title="PDF Preview"
-            sandbox="allow-scripts allow-same-origin"
           />
         )}
       </div>

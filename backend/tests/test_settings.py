@@ -179,3 +179,44 @@ class TestSettingsPersistence:
         data = resp.json()
         assert data["default_model"] == "persist-model"
         assert data["max_tokens"] == 4096
+
+
+class TestConfigConsistency:
+    """测试连接与提取共用 load_runtime_config_from_db."""
+
+    @pytest.mark.asyncio
+    async def test_stored_key_test_uses_same_model_as_runtime_config(self, client, db_session):
+        """已存 Key 时，/settings/test 与 load_runtime_config_from_db 使用同一 model."""
+        from backend.api.v1.settings import _ensure_settings_row
+        from backend.services.api_provider import load_runtime_config_from_db
+        from backend.services.secrets import _encrypt_api_key
+        import backend.services.secrets as secrets_mod
+
+        row = _ensure_settings_row(db_session)
+        row.api_key_encrypted = _encrypt_api_key("sk-test-deepseek-key")
+        secrets_mod._cached_api_key = "sk-test-deepseek-key"
+        row.api_provider = "deepseek"
+        row.api_base_url = "https://api.deepseek.com"
+        row.default_model = "deepseek-v4-flash"
+        db_session.commit()
+
+        captured: dict = {}
+
+        async def _mock_create(*args, **kwargs):
+            captured["model"] = kwargs.get("model")
+            m = MagicMock()
+            m.choices = [MagicMock(message=MagicMock(content="OK"))]
+            return m
+
+        mock_openai = MagicMock()
+        mock_openai.chat.completions.create = _mock_create
+
+        with patch("openai.AsyncOpenAI", return_value=mock_openai):
+            resp = client.post("/api/v1/settings/test", json={})
+
+        assert resp.status_code == 200
+        assert resp.json()["valid"] is True
+        runtime = load_runtime_config_from_db()
+        assert captured["model"] == "deepseek-v4-flash"
+        assert runtime.model == "deepseek-v4-flash"
+        assert captured["model"] == runtime.model

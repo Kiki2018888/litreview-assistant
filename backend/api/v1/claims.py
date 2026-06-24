@@ -395,6 +395,50 @@ class ClaimsExtractStartRequest(BaseModel):
     force: bool = Field(False, description="强制重抽：跳过防重抽，对已抽 paper 先删旧 claims 再抽")
 
 
+def _pending_claims_paper_ids(db: Session, project_id: str, *, force: bool = False) -> list[str]:
+    """返回项目下待抽取 claims 的文献 ID 列表."""
+    completed_paper_ids = [
+        row[0]
+        for row in db.query(Paper.id)
+        .filter(
+            Paper.project_id == project_id,
+            Paper.status == PaperStatus.COMPLETED.value,
+        )
+        .all()
+    ]
+    if not completed_paper_ids:
+        return []
+    if force:
+        return completed_paper_ids
+    papers_with_claims = {
+        row[0]
+        for row in db.query(Claim.paper_id)
+        .filter(Claim.paper_id.in_(completed_paper_ids))
+        .distinct()
+        .all()
+    }
+    return [pid for pid in completed_paper_ids if pid not in papers_with_claims]
+
+
+class PendingClaimsCountResponse(BaseModel):
+    pending_count: int
+
+
+@router.get(
+    "/{project_id}/claims-extract/pending-count",
+    response_model=PendingClaimsCountResponse,
+    summary="待抽取 claims 的文献数量",
+)
+def get_pending_claims_count(project_id: str) -> PendingClaimsCountResponse:
+    """统计项目下已完成解析且尚未抽取 claims 的文献数."""
+    with SessionLocal() as db:
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if not project:
+            raise HTTPException(status_code=404, detail=f"项目 {project_id} 不存在")
+        pending = _pending_claims_paper_ids(db, project_id, force=False)
+        return PendingClaimsCountResponse(pending_count=len(pending))
+
+
 class ClaimsExtractStartResponse(BaseModel):
     job_id: str
     project_id: str
@@ -456,36 +500,24 @@ def start_claims_extract(
             raise HTTPException(status_code=404, detail=f"项目 {project_id} 不存在")
 
         # 统计 pending paper 数（completed 且暂无 claims 的）
-        completed_paper_ids = [
-            row[0]
-            for row in db.query(Paper.id)
-            .filter(
-                Paper.project_id == project_id,
-                Paper.status == PaperStatus.COMPLETED.value,
-            )
-            .all()
-        ]
+        if body.force:
+            pending_paper_ids = _pending_claims_paper_ids(db, project_id, force=True)
+            if pending_paper_ids:
+                logger.info(
+                    "force 重抽 job: project_id=%s, 包含全部 %d 篇文献（含已抽过的）",
+                    project_id, len(pending_paper_ids),
+                )
+        else:
+            pending_paper_ids = _pending_claims_paper_ids(db, project_id, force=False)
 
-        if not completed_paper_ids:
+        if not _pending_claims_paper_ids(db, project_id, force=True):
             raise HTTPException(status_code=400, detail="项目下无已完成全文解析的文献")
 
-        if body.force:
-            # force 模式：包含所有 completed paper，跳过防重抽
-            pending_paper_ids = completed_paper_ids
-            logger.info(
-                "force 重抽 job: project_id=%s, 包含全部 %d 篇文献（含已抽过的）",
-                project_id, len(pending_paper_ids),
+        if not pending_paper_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="无待抽文献：请先完成摘要解析，或该项目文献已全部抽取过",
             )
-        else:
-            # 排除已有 claims 的
-            papers_with_claims = set(
-                row[0]
-                for row in db.query(Claim.paper_id)
-                .filter(Claim.paper_id.in_(completed_paper_ids))
-                .distinct()
-                .all()
-            )
-            pending_paper_ids = [pid for pid in completed_paper_ids if pid not in papers_with_claims]
 
         # 检查是否有 queued/running 的同类型 job
         existing = (
