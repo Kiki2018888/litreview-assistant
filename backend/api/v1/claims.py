@@ -42,6 +42,14 @@ from backend.services.kimi_client import get_model_name
 
 logger = logging.getLogger(__name__)
 
+
+def _get_model_name_safe() -> str:
+    """安全获取模型名称，Key 未配置时返回友好 400 错误而非 500."""
+    try:
+        return get_model_name()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 router = APIRouter(prefix="/api/v1/projects", tags=["claims"])
 
 # 另建独立前缀供 estimate 端点和 jobs 端点
@@ -182,7 +190,7 @@ async def extract_claims(
         raise HTTPException(status_code=400, detail="文献全文为空，无法抽取")
 
     # ── 3. 预估信息 ──
-    model_name = body.model or get_model_name()
+    model_name = body.model or _get_model_name_safe()
     estimate = estimate_extraction_time(model_name, paper_count=1)
 
     logger.info(
@@ -371,7 +379,7 @@ async def estimate_cost(
     model: Optional[str] = Query(None, description="模型名，不传则用系统配置"),
 ):
     """根据当前配置模型 + 文献数，返回预估耗时."""
-    model_name = model or get_model_name()
+    model_name = model or _get_model_name_safe()
     est = estimate_extraction_time(model_name, paper_count=paper_count)
     return EstimateResponse(paper_count=paper_count, estimate=est)
 
@@ -439,7 +447,7 @@ def start_claims_extract(
     已抽取过 claims 的文献会被防重抽机制自动跳过。
     设置 force=true 可跳过防重抽，对已抽 paper 先删旧 claims 再重新抽取。
     """
-    model_name = body.model or get_model_name()
+    model_name = body.model or _get_model_name_safe()
 
     with SessionLocal() as db:
         # 校验项目
@@ -851,7 +859,7 @@ async def cluster_limitations(
             run_id="",
             total_claims=0,
             total_candidate_groups=0,
-            model_used=get_model_name(),
+            model_used=_get_model_name_safe(),
             wall_time_seconds=0,
             groups=[],
         )
@@ -866,8 +874,11 @@ async def cluster_limitations(
             run_clustering(project_id),
             timeout=_CLUSTERING_TIMEOUT,
         )
+    except ValueError as exc:
+        # Key 未配置等配置错误 → 友好 400 而非 500
+        raise HTTPException(status_code=400, detail=str(exc))
     except asyncio.TimeoutError:
-        model_name = get_model_name()
+        model_name = _get_model_name_safe()
         logger.error(
             "局限聚类超时 (%.0fs): project_id=%s model=%s",
             _CLUSTERING_TIMEOUT, project_id, model_name,
