@@ -1,3 +1,18 @@
+# ResearchAssistant — 本地优先的 AI 科研文献分析工具
+# Copyright (C) 2026  XQ
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """ResearchAssistant 应用入口.
 
 FastAPI 应用启动、CORS、生命周期管理、路由注册。
