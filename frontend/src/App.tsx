@@ -5,7 +5,7 @@ import Projects from "./pages/Projects"
 import PaperWrite from "./pages/PaperWrite"
 import Settings from "./pages/Settings"
 import ChatHistory from "./pages/ChatHistory"
-import Adjudication from "./pages/Adjudication"
+import ComingSoon from "./components/ComingSoon"
 import NotFound from "./pages/NotFound"
 
 export default function App() {
@@ -17,7 +17,8 @@ export default function App() {
           <Route path="/projects" element={<Projects />} />
           <Route path="/write" element={<PaperWrite />} />
           <Route path="/history" element={<ChatHistory />} />
-          <Route path="/adjudication" element={<Adjudication />} />
+          {/* 信号发现模块（裁决面板）本版未发布，统一占位；后端代码与路由保留，将来换回 <Adjudication /> 即可 */}
+          <Route path="/adjudication" element={<ComingSoon />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<NotFound />} />
         </Route>

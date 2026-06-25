@@ -8,6 +8,7 @@ import { apiGet, apiPost } from "../api/client"
 import { useSSE } from "../hooks/useSSE"
 import { toast } from "sonner"
 import { Gavel, GitBranch, Loader2, Clock } from "lucide-react"
+import { COMING_SOON_MESSAGE } from "../components/ComingSoon"
 import type { Project, ProjectListResponse, ClaimsExtractStartResponse } from "../types"
 
 // ============================================================================
@@ -49,10 +50,6 @@ export default function Literature() {
   const [claimsEstimate, setClaimsEstimate] = useState<string | null>(null)
   // 独立 useSSE 实例用于 Job 进度（不影响详情页的 useSSE）
   const { start: startClaimsSSE, abort: abortClaimsSSE } = useSSE()
-
-  // ── A2: 聚类状态 ──
-  const [clustering, setClustering] = useState(false)
-  const [clusterProgress, setClusterProgress] = useState("")
 
   useEffect(() => {
     apiGet<ProjectListResponse>("/projects/?page=1&page_size=100")
@@ -223,55 +220,11 @@ export default function Literature() {
   }, [projectFilter, claimsExtracting, projects, startClaimsSSE, handleRefresh])
 
   // ── A2: 项目级分析局限（聚类） ──
-  const handleProjectCluster = useCallback(async () => {
-    if (!projectFilter || clustering) return
-    setClustering(true)
-    setClusterProgress("正在聚类分析…")
-
-    // 使用 no-cache 避免浏览器缓存
-    try {
-      const ctrl = new AbortController()
-      const timeout = setTimeout(() => ctrl.abort(), 30000) // 28s 后超时
-      const res = await fetch(`/api/v1/projects/${projectFilter}/clustering/limitation`, {
-        method: "POST",
-        signal: ctrl.signal,
-      })
-      clearTimeout(timeout)
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}))
-        const detail = errData.detail || `HTTP ${res.status}`
-        if (res.status === 504) {
-          toast.error("聚类超时，建议在设置中切换更快模型（如 kimi-k2.6）后重试")
-        } else {
-          toast.error(`聚类失败: ${detail}`)
-        }
-        setClusterProgress("")
-        setClustering(false)
-        return
-      }
-
-      const result = await res.json()
-      const groupCount = result.total_candidate_groups ?? 0
-      const runId = result.run_id ?? ""
-      toast.success(`聚类完成：${groupCount} 个候选组`)
-      setClusterProgress(`完成 · ${groupCount} 组`)
-
-      // 跳转到裁决面板
-      setTimeout(() => {
-        navigation(`/adjudication${runId ? `?run_id=${runId}` : ""}`)
-      }, 1500)
-    } catch (err: any) {
-      if (err.name === "AbortError") {
-        toast.error("聚类超时，建议在设置中切换更快模型（如 kimi-k2.6）后重试")
-      } else {
-        toast.error(err instanceof Error ? err.message : "聚类失败")
-      }
-      setClusterProgress("")
-    } finally {
-      setClustering(false)
-    }
-  }, [projectFilter, clustering, navigation])
+  // 信号发现模块（局限聚类→裁决）本版未发布，入口统一占位，不再发起任何网络请求。
+  // 后端 /projects/{id}/clustering/limitation 路由与服务保留，将来就绪后换回真实实现即可。
+  const handleProjectCluster = useCallback(() => {
+    toast(COMING_SOON_MESSAGE)
+  }, [])
 
   const showDetailOnly = detailPaperId !== null && chatMode === null
 
@@ -299,6 +252,7 @@ export default function Literature() {
         <FileUploader
           onUploadComplete={handleUploadComplete}
           projects={projects}
+          defaultProjectId={projectFilter}
         />
 
         <hr className="border-border my-6" />
@@ -315,7 +269,7 @@ export default function Literature() {
               {/* A1: 批量提取 Claims */}
               <button
                 onClick={handleProjectExtractClaims}
-                disabled={claimsExtracting || clustering}
+                disabled={claimsExtracting}
                 className="inline-flex items-center gap-1.5 rounded-md border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/30 px-3 py-1.5 text-xs font-medium text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-950/50 transition-colors disabled:opacity-40"
                 title={
                   pendingClaimsCount !== null
@@ -336,17 +290,12 @@ export default function Literature() {
                 )}
               </button>
 
-              {/* A2: 分析局限（聚类） */}
+              {/* A2: 分析局限（聚类）— 本版未发布，点击仅提示"敬请期待" */}
               <button
                 onClick={handleProjectCluster}
-                disabled={clustering || claimsExtracting}
                 className="inline-flex items-center gap-1.5 rounded-md border border-cyan-200 dark:border-cyan-800 bg-cyan-50 dark:bg-cyan-950/30 px-3 py-1.5 text-xs font-medium text-cyan-700 dark:text-cyan-300 hover:bg-cyan-100 dark:hover:bg-cyan-950/50 transition-colors disabled:opacity-40"
               >
-                {clustering ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <GitBranch className="h-3.5 w-3.5" />
-                )}
+                <GitBranch className="h-3.5 w-3.5" />
                 分析局限
               </button>
 
@@ -376,16 +325,6 @@ export default function Literature() {
                     </span>
                   </div>
                 )}
-              </div>
-            )}
-
-            {/* A2: 聚类进度条 */}
-            {clustering && clusterProgress && (
-              <div className="px-3 py-1.5 bg-cyan-50 dark:bg-cyan-950/30 rounded text-xs text-cyan-700 dark:text-cyan-300">
-                <span className="inline-flex items-center gap-1.5">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  {clusterProgress}
-                </span>
               </div>
             )}
           </div>
