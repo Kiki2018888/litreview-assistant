@@ -104,7 +104,8 @@ class Settings(BaseSettings):
     request_timeout: int = 120
 
     # ---- 批量提取 ----
-    batch_extract_concurrency: int = 1  # MVP 串行
+    # 保守并发：3 路并行 AI 调用，DB 写仍为独立短事务（WAL + busy_timeout 兜底）
+    batch_extract_concurrency: int = 3
 
     # ---- 文件上传限制 ----
     max_upload_file_size_mb: int = 50

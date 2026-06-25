@@ -14,6 +14,7 @@ import {
   MessageSquare,
   Gavel,
   Clock,
+  Quote,
 } from "lucide-react"
 import { toast } from "sonner"
 import { cn } from "../lib/utils"
@@ -21,7 +22,7 @@ import { apiGet, apiPost, apiPut, apiDelete } from "../api/client"
 import { useSSE, type SSEEvent } from "../hooks/useSSE"
 
 import PdfViewer from "./PdfViewer"
-import type { PaperDetail, PaperStatus, ExtractedData } from "../types"
+import type { PaperDetail, PaperStatus, ExtractedData, ClaimItem, ClaimsListResponse } from "../types"
 
 // ============================================================================
 // 常量
@@ -57,6 +58,9 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
   const [paper, setPaper] = useState<PaperDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // ── Claims 列表（文献库内可见结果） ──
+  const [claims, setClaims] = useState<ClaimItem[]>([])
 
   // ── 操作状态 ──
   const [parsing, setParsing] = useState(false)
@@ -107,14 +111,26 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
     }
   }, [paperId])
 
+  // ── 获取该文献已抽取的 claims（文献库内可见） ──
+  const fetchClaims = useCallback(async () => {
+    if (!paperId) return
+    try {
+      const data = await apiGet<ClaimsListResponse>(`/claims/by-paper/${paperId}`)
+      setClaims(data.claims)
+    } catch {
+      setClaims([])
+    }
+  }, [paperId])
+
   useEffect(() => {
     fetchDetail()
+    fetchClaims()
     return () => {
       // 组件卸载时取消所有 SSE
       abortExtract()
       abortClaimsSSE()
     }
-  }, [fetchDetail, abortExtract, abortClaimsSSE])
+  }, [fetchDetail, fetchClaims, abortExtract, abortClaimsSSE])
 
   // ── 操作：重新解析 ──
   const handleReparse = useCallback(async () => {
@@ -162,10 +178,21 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
           case "chunk":
             setExtractProgress("解析 AI 响应…")
             break
-          case "result":
-            setExtractProgress("提取完成 ✓")
-            toast.success(`提取成功：${(event.title as string) ?? paperId}`)
+          case "result": {
+            const isPartial = event.partial === true
+            const missing = (event.missing_fields as string[] | undefined) ?? []
+            if (isPartial) {
+              setExtractProgress("部分成功 ✓（部分字段缺失）")
+              toast.success(
+                `提取部分成功：${(event.title as string) ?? paperId}` +
+                  (missing.length ? `（缺：${missing.join("、")}）` : "")
+              )
+            } else {
+              setExtractProgress("提取完成 ✓")
+              toast.success(`提取成功：${(event.title as string) ?? paperId}`)
+            }
             break
+          }
           case "error":
             setExtractProgress(`提取失败：${(event.message as string) ?? "未知错误"}`)
             toast.error((event.message as string) ?? "提取失败")
@@ -262,6 +289,7 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
               setClaimsProgress(`抽取完成 · 成功 ${ok} 篇${fail > 0 ? `，失败 ${fail} 篇` : ""}`)
               toast.success(`Claims 抽取完成: ${ok}/${(ok + fail)} 篇成功`)
               fetchDetail()
+              fetchClaims()
               onRefresh?.()
               break
             }
@@ -279,7 +307,7 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
       toast.error(err instanceof Error ? err.message : "创建 Claims 提取任务失败")
       setClaimsExtracting(false)
     }
-  }, [paper, claimsExtracting, startClaimsSSE, fetchDetail, onRefresh])
+  }, [paper, claimsExtracting, startClaimsSSE, fetchDetail, fetchClaims, onRefresh])
 
   // ── 操作：翻译摘要 ──
 
@@ -792,6 +820,75 @@ export default function LiteratureDetail({ paperId, onClose, onRefresh, onOpenCh
                         <Pencil className="h-3 w-3" />
                         编辑标签
                       </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* ── 论断 Claims（文献库内可见结果） ── */}
+            <div className="border-b border-border">
+              <button
+                onClick={() => toggleSection("claims")}
+                className="flex w-full items-center justify-between px-4 py-2.5 text-sm font-medium hover:bg-muted/30 transition-colors"
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <Quote className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400" />
+                  论断 Claims
+                  {claims.length > 0 && (
+                    <span className="rounded-full bg-purple-100 px-1.5 py-0.5 text-xs font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">
+                      {claims.length}
+                    </span>
+                  )}
+                </span>
+                {expandedSections.has("claims") ? (
+                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                )}
+              </button>
+              {expandedSections.has("claims") && (
+                <div className="px-4 pb-3">
+                  {claims.length > 0 ? (
+                    <ul className="space-y-2">
+                      {claims.map((c) => (
+                        <li
+                          key={c.id}
+                          className="rounded-md border border-border bg-muted/20 p-2.5 text-sm"
+                        >
+                          <div className="mb-1 flex flex-wrap items-center gap-1.5 text-xs">
+                            {c.topic && (
+                              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
+                                {c.topic}
+                              </span>
+                            )}
+                            {c.is_limitation && (
+                              <span className="rounded bg-orange-100 px-1.5 py-0.5 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300">
+                                局限
+                              </span>
+                            )}
+                            {c.stat_support && (
+                              <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700 dark:bg-green-900/30 dark:text-green-300">
+                                统计支持
+                              </span>
+                            )}
+                            <span className="ml-auto text-muted-foreground">P{c.quote_page}</span>
+                          </div>
+                          {c.subject && (
+                            <p className="mb-0.5 text-xs text-muted-foreground">
+                              对象：{c.subject}
+                            </p>
+                          )}
+                          <p className="text-foreground/90 leading-relaxed">「{c.quote}」</p>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="py-4 text-center text-sm text-muted-foreground">
+                      <p>暂无 claims</p>
+                      <p className="mt-1 text-xs opacity-60">
+                        点击上方「提取Claims」抽取本文献论断
+                      </p>
                     </div>
                   )}
                 </div>

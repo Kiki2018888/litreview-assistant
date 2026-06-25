@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from fastapi.responses import StreamingResponse
 
-from backend.config import DEFAULT_MODEL, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS
+from backend.config import DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS
 from backend.models.tables import (
     Project,
     ChatSession,
@@ -287,7 +287,7 @@ async def cross_literature_chat(body: CrossLiteratureChatRequest, request: Reque
         try:
             async for chunk in client.chat_stream(
                 messages=messages,
-                model=DEFAULT_MODEL,
+                model=client._model,
                 temperature=DEFAULT_TEMPERATURE,
                 max_tokens=_CHAT_MAX_TOKENS,
             ):
@@ -423,7 +423,7 @@ async def single_paper_chat(
         try:
             async for chunk in client.chat_stream(
                 messages=messages,
-                model=DEFAULT_MODEL,
+                model=client._model,
                 temperature=DEFAULT_TEMPERATURE,
                 max_tokens=_CHAT_MAX_TOKENS,
             ):

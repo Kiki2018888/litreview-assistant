@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend.config import DEFAULT_MODEL, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS
+from backend.config import DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS
 from backend.models.tables import ExtractedData, Paper
 from backend.services.db import SessionLocal
 from backend.services.kimi_client import KimiClient
@@ -136,7 +136,7 @@ async def translate_paper(paper_id: str):
     try:
         translation = await client.chat(
             messages=[{"role": "user", "content": prompt}],
-            model=DEFAULT_MODEL,
+            model=client._model,
             temperature=DEFAULT_TEMPERATURE,
             max_tokens=DEFAULT_MAX_TOKENS,
         )

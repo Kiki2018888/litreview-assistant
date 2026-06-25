@@ -22,6 +22,8 @@ interface FileUploaderProps {
   onUploadComplete?: () => void
   /** 可选项目列表（下拉选择目标项目） */
   projects?: Project[]
+  /** 当前文献库选中的项目筛选 ID（空串=全部）。非空时上传默认落到该项目，避免误落「我的文献」 */
+  defaultProjectId?: string
 }
 
 // ============================================================================
@@ -39,7 +41,7 @@ interface UploadItem {
 // FileUploader 组件
 // ============================================================================
 
-export default function FileUploader({ onUploadComplete, projects }: FileUploaderProps) {
+export default function FileUploader({ onUploadComplete, projects, defaultProjectId }: FileUploaderProps) {
   const [items, setItems] = useState<UploadItem[]>([])
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -54,14 +56,19 @@ export default function FileUploader({ onUploadComplete, projects }: FileUploade
     }
   }, [])
 
-  // 默认选中「未分类」项目
+  // 目标项目预选：优先跟随文献库当前选中的项目筛选，避免误落「我的文献」；
+  // 当筛选为"全部"(空串)时回落到默认项目。defaultProjectId 变化时同步更新。
   useEffect(() => {
-    if (!projects?.length || projectId) return
-    const defaultProject = projects.find((p) => p.is_default)
-    if (defaultProject) {
-      setProjectId(defaultProject.id)
+    if (!projects?.length) return
+    if (defaultProjectId && projects.some((p) => p.id === defaultProjectId)) {
+      setProjectId(defaultProjectId)
+      return
     }
-  }, [projects, projectId])
+    if (!projectId) {
+      const defaultProject = projects.find((p) => p.is_default)
+      if (defaultProject) setProjectId(defaultProject.id)
+    }
+  }, [projects, projectId, defaultProjectId])
 
   const validateFiles = useCallback((files: FileList | File[]): { valid: File[]; rejected: string[] } => {
     const rejected: string[] = []

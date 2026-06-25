@@ -104,26 +104,63 @@ class ParseResult:
     contract: ExtractedDataContract
     """通过质量校验的 schema 实例."""
 
+    partial: bool = False
+    """是否"部分成功"（核心字段有缺失，但仍保留入库）."""
+
+    missing_fields: list[str] = field(default_factory=list)
+    """缺失/为空的核心字段名列表（partial=True 时非空）."""
+
+
+# 核心字段：用于"部分成功"判定（缺失不再判死，仅标记 partial）
+_CORE_FIELDS = ["research_question", "sample_source", "key_data", "conclusion", "limitations"]
+
+
+def _field_is_empty(value: Any) -> bool:
+    """字段是否为空（None/空串/空列表）."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, dict)):
+        return len(value) == 0
+    return False
+
 
 def parse_and_validate(raw_text: str) -> ParseResult:
-    """解析 AI 返回文本并校验质量.
+    """解析 AI 返回文本并做"尽力而为"质量评估（ADR-2 放宽）.
 
     Args:
         raw_text: AI 返回的原始文本（可能含 markdown 包裹）。
 
     Returns:
-        ParseResult：含原始 dict 与通过校验的 ExtractedDataContract。
+        ParseResult：含原始 dict、契约实例，以及 partial/missing_fields 标记。
 
     Raises:
-        JSONParseError: JSON 无法解析。
-        PydanticValidationError: Schema 校验不通过（含具体错误列表）。
+        JSONParseError: JSON 无法解析（唯一的硬失败之一）。
+        ExtractQualityError: 完全空响应（核心字段与标题全空）。
+
+    放宽说明：契约字段缺失/为空不再抛 ValidationError 判死；
+    仅当 JSON 无法解析、或响应完全为空时才算失败，其余一律入库，
+    核心字段有缺失时标记 partial=True（部分成功）。
     """
     cleaned = _strip_markdown_fence(raw_text)
-    data = _try_parse_json(cleaned)
+    data = _try_parse_json(cleaned)  # 硬门槛：无法解析为 JSON 才算失败
 
-    # Pydantic 校验（会抛出 ValidationError 含错误详情）
+    # 契约已放宽：缺失字段填默认值，model_validate 不再因字段缺失抛错
     contract = ExtractedDataContract.model_validate(data)
-    return ParseResult(data=data, contract=contract)
+
+    # 最低门槛：核心字段 + 标题全空 → 视为完全空响应，判失败
+    core_values = [getattr(contract, f) for f in _CORE_FIELDS]
+    if all(_field_is_empty(v) for v in core_values) and _field_is_empty(contract.title):
+        raise ExtractQualityError("AI 返回内容为空，无任何可用字段")
+
+    missing = [f for f in _CORE_FIELDS if _field_is_empty(getattr(contract, f))]
+    return ParseResult(
+        data=data,
+        contract=contract,
+        partial=bool(missing),
+        missing_fields=missing,
+    )
 
 
 # ---------------------------------------------------------------------------

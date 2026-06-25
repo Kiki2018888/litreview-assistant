@@ -37,8 +37,12 @@ def _ensure_settings_row() -> None:
     try:
         from sqlalchemy import text
 
-        from backend.config import DEFAULT_MAX_TOKENS, DEFAULT_MODEL, DEFAULT_TEMPERATURE
-        from backend.services.api_provider import DEFAULT_MOONSHOT_BASE_URL, PROVIDER_AUTO
+        from backend.config import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
+        from backend.services.api_provider import (
+            DEFAULT_DEEPSEEK_BASE_URL,
+            PROVIDER_DEEPSEEK,
+            default_model_for_provider,
+        )
 
         row = db.execute(text("SELECT 1 FROM settings WHERE id = 1")).fetchone()
         if row is None:
@@ -49,9 +53,9 @@ def _ensure_settings_row() -> None:
                     "VALUES (1, :provider, :base_url, :model, :temp, :tokens, :theme)"
                 ),
                 {
-                    "provider": PROVIDER_AUTO,
-                    "base_url": DEFAULT_MOONSHOT_BASE_URL,
-                    "model": DEFAULT_MODEL,
+                    "provider": PROVIDER_DEEPSEEK,
+                    "base_url": DEFAULT_DEEPSEEK_BASE_URL,
+                    "model": default_model_for_provider(PROVIDER_DEEPSEEK),
                     "temp": DEFAULT_TEMPERATURE,
                     "tokens": DEFAULT_MAX_TOKENS,
                     "theme": "system",
@@ -100,20 +104,21 @@ class KimiClient:
 
             except Exception as exc:
                 last_error = exc
-                if attempt < MAX_RETRIES:
-                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                if is_retryable_error(exc) and attempt < MAX_RETRIES:
+                    delay = retry_after_seconds(exc, RETRY_BASE_DELAY * (2 ** attempt))
                     logger.warning(
-                        "Kimi API 请求失败 (尝试 %d/%d)，%0.1fs 后重试: %s",
+                        "Kimi API 请求失败(可重试) (尝试 %d/%d)，%0.1fs 后重试: %s",
                         attempt + 1, MAX_RETRIES + 1, delay, exc,
                     )
                     await asyncio.sleep(delay)
                 else:
                     logger.error(
-                        "Kimi API 请求失败，已用尽全部 %d 次重试", MAX_RETRIES + 1
+                        "Kimi API 请求失败（不可重试或已耗尽重试）: %s", exc
                     )
+                    break
 
         raise RuntimeError(
-            f"Kimi API 调用失败，已重试 {MAX_RETRIES} 次。"
+            f"Kimi API 调用失败（已重试 {MAX_RETRIES} 次或遇不可重试错误）。"
             f"最后错误: {_format_error(last_error)}"
         )
 
@@ -156,20 +161,21 @@ class KimiClient:
 
             except Exception as exc:
                 last_error = exc
-                if attempt < MAX_RETRIES:
-                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                if is_retryable_error(exc) and attempt < MAX_RETRIES:
+                    delay = retry_after_seconds(exc, RETRY_BASE_DELAY * (2 ** attempt))
                     logger.warning(
-                        "Kimi API JSON 请求失败 (尝试 %d/%d)，%0.1fs 后重试: %s",
+                        "Kimi API JSON 请求失败(可重试) (尝试 %d/%d)，%0.1fs 后重试: %s",
                         attempt + 1, MAX_RETRIES + 1, delay, exc,
                     )
                     await asyncio.sleep(delay)
                 else:
                     logger.error(
-                        "Kimi API JSON 请求失败，已用尽全部 %d 次重试", MAX_RETRIES + 1
+                        "Kimi API JSON 请求失败（不可重试或已耗尽重试）: %s", exc
                     )
+                    break
 
         raise RuntimeError(
-            f"Kimi API JSON 调用失败，已重试 {MAX_RETRIES} 次。"
+            f"Kimi API JSON 调用失败（已重试 {MAX_RETRIES} 次或遇不可重试错误）。"
             f"最后错误: {_format_error(last_error)}"
         )
 
@@ -203,22 +209,65 @@ class KimiClient:
 
             except Exception as exc:
                 last_error = exc
-                if attempt < MAX_RETRIES:
-                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                if is_retryable_error(exc) and attempt < MAX_RETRIES:
+                    delay = retry_after_seconds(exc, RETRY_BASE_DELAY * (2 ** attempt))
                     logger.warning(
-                        "Kimi SSE 流式请求失败 (尝试 %d/%d)，%0.1fs 后重试: %s",
+                        "Kimi SSE 流式请求失败(可重试) (尝试 %d/%d)，%0.1fs 后重试: %s",
                         attempt + 1, MAX_RETRIES + 1, delay, exc,
                     )
                     await asyncio.sleep(delay)
                 else:
                     logger.error(
-                        "Kimi SSE 流式请求失败，已用尽全部 %d 次重试", MAX_RETRIES + 1
+                        "Kimi SSE 流式请求失败（不可重试或已耗尽重试）: %s", exc
                     )
+                    break
 
         raise RuntimeError(
-            f"Kimi SSE 流式调用失败，已重试 {MAX_RETRIES} 次。"
+            f"Kimi SSE 流式调用失败（已重试 {MAX_RETRIES} 次或遇不可重试错误）。"
             f"最后错误: {_format_error(last_error)}"
         )
+
+
+_MAX_BACKOFF_SECONDS = 30.0
+
+
+def is_retryable_error(exc: Exception) -> bool:
+    """区分"可重试错误"（限流/超时/连接/5xx）与"真失败"（认证/请求格式错误）。
+
+    - 可重试：RateLimit(429)、Timeout、Connection、5xx。
+    - 不可重试：400/401/403/404/422。
+    - 未知异常：保守按可重试处理。
+    """
+    import openai
+
+    if isinstance(exc, (openai.RateLimitError, openai.APITimeoutError, openai.APIConnectionError)):
+        return True
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        resp = getattr(exc, "response", None)
+        status = getattr(resp, "status_code", None)
+    if status is not None:
+        if status == 429 or status >= 500:
+            return True
+        if status in (400, 401, 403, 404, 422):
+            return False
+    return True
+
+
+def retry_after_seconds(exc: Exception, fallback: float) -> float:
+    """优先读取响应头 Retry-After（限流场景），否则用退避 fallback；上限 30s。"""
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        try:
+            ra = resp.headers.get("retry-after")
+        except Exception:
+            ra = None
+        if ra:
+            try:
+                return min(float(ra), _MAX_BACKOFF_SECONDS)
+            except (TypeError, ValueError):
+                pass
+    return min(fallback, _MAX_BACKOFF_SECONDS)
 
 
 def _format_error(exc: Optional[Exception]) -> str:

@@ -33,10 +33,17 @@ export function getApiBaseSync(): string {
 // HTTP 方法
 // ============================================================================
 
+/** 失败时优先读取后端响应体的 detail 文案，解析失败回退到 `METHOD path failed: status` */
+async function throwHttpError(res: Response, method: string, path: string): Promise<never> {
+  const errBody = await res.json().catch(() => null)
+  const detail = errBody?.detail ?? `${method} ${path} failed: ${res.status}`
+  throw new Error(detail)
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const base = await resolveApiBase()
   const res = await fetch(`${base}${path}`)
-  if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`)
+  if (!res.ok) await throwHttpError(res, 'GET', path)
   return res.json()
 }
 
@@ -47,7 +54,7 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   })
-  if (!res.ok) throw new Error(`POST ${path} failed: ${res.status}`)
+  if (!res.ok) await throwHttpError(res, 'POST', path)
   return res.json()
 }
 
@@ -58,7 +65,7 @@ export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   })
-  if (!res.ok) throw new Error(`PUT ${path} failed: ${res.status}`)
+  if (!res.ok) await throwHttpError(res, 'PUT', path)
   return res.json()
 }
 

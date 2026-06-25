@@ -164,40 +164,35 @@ class ExtractedDataContract(BaseModel):
     authors: list[str] = Field(default_factory=list)
     year: Optional[int] = None
     journal: Optional[str] = None
-    research_question: str = Field(..., min_length=1)
-    sample_source: str = Field(..., min_length=1)
+    # ADR-2（可靠性放宽）：核心字段由"必填非空"降为"尽力而为"，
+    # 缺失/为空不再判死，仅在 parse_and_validate 中标记为"部分成功"。
+    research_question: str = Field(default="")
+    sample_source: str = Field(default="")
     sample_size: Optional[str] = ""
     key_methods: list[str] = Field(default_factory=list)
-    key_data: list[str] = Field(..., min_length=1)
-    conclusion: str = Field(..., min_length=1)
-    limitations: list[str] = Field(..., min_length=1)
+    key_data: list[str] = Field(default_factory=list)
+    conclusion: str = Field(default="")
+    limitations: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
     # 兼容旧字段
     background: Optional[str] = ""
     methods: Optional[str] = ""
     key_results: list[str] = Field(default_factory=list)
 
-    @field_validator("key_data")
+    @field_validator(
+        "key_data", "limitations", "key_methods", "key_results", "keywords",
+        mode="before",
+    )
     @classmethod
-    def _key_data_has_numeric(cls, v: list[str]) -> list[str]:
-        """key_data 至少 1 条，且每条含具体数值."""
-        if len(v) < 1:
-            raise ValueError("key_data 至少需要 1 条核心数据")
-        for i, item in enumerate(v):
-            if not _NUMERIC_RE.search(item):
-                raise ValueError(
-                    f"key_data[{i}] 缺少具体数值/指标: '{item}'。"
-                    "禁止'显著增加'等模糊表述，请补充具体数字。"
-                )
-        return v
+    def _sanitize_str_list(cls, v: Any) -> Any:
+        """尽力而为：剔除空字符串/非字符串项，但绝不因数量或内容判废。
 
-    @field_validator("limitations")
-    @classmethod
-    def _limitations_at_least_one(cls, v: list[str]) -> list[str]:
-        """limitations 至少 1 条."""
-        if len(v) < 1:
-            raise ValueError("limitations 至少需要 1 条研究局限性")
-        return v
+        放宽前：key_data 必含数字、limitations 至少 1 条，否则整篇判死。
+        放宽后：仅清洗明显空项，保留模型给出的内容，质量在上层标记 partial。
+        """
+        if not isinstance(v, list):
+            return v
+        return [item for item in v if isinstance(item, str) and item.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +322,7 @@ class PaperListItem(_ORMModel):
     project_id: Optional[str] = None
     project_name: Optional[str] = None
     created_at: datetime
+    claims_count: int = 0
 
 
 class PaperDetailResponse(PaperResponse):

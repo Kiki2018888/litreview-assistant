@@ -18,12 +18,13 @@ import hashlib
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import AsyncIterator, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from backend.models.tables import Claim, ExtractJob, JobStatus, JobType, Paper, PaperPage, PaperStatus, Project
@@ -35,6 +36,7 @@ from backend.services.claim_extractor import (
 )
 from backend.services.db import SessionLocal, get_db
 from backend.services.extract_job_worker import (
+    JOB_STALE_TIMEOUT_SECONDS,
     subscribe_job_events,
     unsubscribe_job_events,
 )
@@ -365,6 +367,54 @@ async def list_claims(
 
 
 # ---------------------------------------------------------------------------
+# GET /claims/by-paper/{paper_id} — 单篇文献 claims（文献库详情用，项目无关）
+# ---------------------------------------------------------------------------
+
+
+@estimate_router.get(
+    "/by-paper/{paper_id}",
+    response_model=ClaimsListResponse,
+    summary="查看单篇文献已抽取的 claims",
+)
+def list_claims_by_paper(paper_id: str, db: Session = Depends(get_db)):
+    """供文献库详情面板查看某篇文献的 claims（无需 project_id）."""
+    paper = db.query(Paper).filter(Paper.id == paper_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail=f"文献 {paper_id} 不存在")
+
+    rows = (
+        db.query(Claim)
+        .filter(Claim.paper_id == paper_id)
+        .order_by(Claim.quote_page, Claim.id)
+        .all()
+    )
+    claims = [
+        ClaimItem(
+            id=row.id,
+            claim_form=row.claim_form,
+            subject=row.subject,
+            topic=row.topic,
+            direction=row.direction,
+            comparison_result=row.comparison_result,
+            magnitude=row.magnitude,
+            stat_support=row.stat_support,
+            is_limitation=row.is_limitation,
+            quote=row.quote,
+            quote_page=row.quote_page,
+            quote_status=row.quote_status,
+            notes=row.notes,
+        )
+        for row in rows
+    ]
+    return ClaimsListResponse(
+        project_id=paper.project_id or "",
+        paper_id=paper_id,
+        total=len(claims),
+        claims=claims,
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /claims/estimate — 模型耗时预估
 # ---------------------------------------------------------------------------
 
@@ -519,17 +569,25 @@ def start_claims_extract(
                 detail="无待抽文献：请先完成摘要解析，或该项目文献已全部抽取过",
             )
 
-        # 检查是否有 queued/running 的同类型 job
+        # 检查是否有真正进行中的同类型 job：
+        # queued/paused 一律拦截；running 仅在"未超时（updated_at 较新）"时才拦截，
+        # 超时的 running 视为孤儿（由 worker 自愈回收），不再永久挡住后续发起。
+        stale_cutoff = datetime.utcnow() - timedelta(seconds=JOB_STALE_TIMEOUT_SECONDS)
         existing = (
             db.query(ExtractJob)
             .filter(
                 ExtractJob.project_id == project_id,
                 ExtractJob.job_type == JobType.CLAIMS_EXTRACT.value,
-                ExtractJob.status.in_([
-                    JobStatus.QUEUED.value,
-                    JobStatus.RUNNING.value,
-                    JobStatus.PAUSED.value,
-                ]),
+                or_(
+                    ExtractJob.status.in_([
+                        JobStatus.QUEUED.value,
+                        JobStatus.PAUSED.value,
+                    ]),
+                    and_(
+                        ExtractJob.status == JobStatus.RUNNING.value,
+                        ExtractJob.updated_at >= stale_cutoff,
+                    ),
+                ),
             )
             .first()
         )

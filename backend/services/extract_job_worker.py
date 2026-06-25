@@ -227,8 +227,8 @@ async def process_one_paper_atomically(
     error_detail: Optional[str] = None
 
     with SessionLocal() as db:
-        with db.begin():  # 显式事务边界
-            try:
+        try:
+            with db.begin():  # 显式事务边界（异常自动 ROLLBACK）
                 # force 模式：先删除该 paper 的旧 claims
                 if force:
                     old_count = (
@@ -288,14 +288,14 @@ async def process_one_paper_atomically(
                     "[Job %s] paper_id=%s 写入 %d 条 claims (拒绝 %d 条), %.1fs",
                     job.id, paper.id, written, len(rejected_list), wall_time,
                 )
-            except Exception as exc:
-                # db.begin() 的 __exit__ 会自动 ROLLBACK
-                logger.exception(
-                    "[Job %s] paper_id=%s 写库异常，事务回滚",
-                    job.id, paper.id,
-                )
-                error_detail = str(exc)[:500]
-                raise  # 重新抛出，让 with db.begin() 触发回滚
+        except Exception as exc:
+            # db.begin() 的 __exit__ 已自动 ROLLBACK；此处捕获后返回失败结果，
+            # 不再向上抛出，避免冒泡到 worker 外层导致 job 卡 RUNNING（孤儿）。
+            logger.exception(
+                "[Job %s] paper_id=%s 写库异常，事务回滚",
+                job.id, paper.id,
+            )
+            error_detail = str(exc)[:500]
 
     if error_detail:
         return {
@@ -356,6 +356,36 @@ _POLL_INTERVAL = 2.0  # 无任务时轮询间隔（秒）
 _PAUSE_CHECK_INTERVAL = 1.0  # 暂停时检查恢复间隔（秒）
 _PAPER_INTERVAL = 0.5  # 篇间间隔，防止 API 过载
 
+# running 任务超过该时长无进展（updated_at 未刷新）视为孤儿，运行期自动判 interrupted
+JOB_STALE_TIMEOUT_SECONDS = 600  # 10 分钟
+
+
+def _reclaim_stale_running_jobs() -> int:
+    """运行期自愈：把 updated_at 过旧的 running 任务判为 interrupted（孤儿回收）。
+
+    不依赖重启；每轮轮询调用一次。返回回收数量。
+    """
+    from datetime import timedelta
+
+    cutoff = datetime.utcnow() - timedelta(seconds=JOB_STALE_TIMEOUT_SECONDS)
+    reclaimed = 0
+    with SessionLocal() as db:
+        stale = (
+            db.query(ExtractJob)
+            .filter(
+                ExtractJob.status == JobStatus.RUNNING.value,
+                ExtractJob.updated_at < cutoff,
+            )
+            .all()
+        )
+        for j in stale:
+            j.status = JobStatus.INTERRUPTED.value
+            reclaimed += 1
+        if reclaimed:
+            db.commit()
+            logger.warning("运行期自愈：回收 %d 个超时 running 孤儿任务 → interrupted", reclaimed)
+    return reclaimed
+
 
 async def claims_worker_loop() -> None:
     """Claims 抽取 worker 主循环.
@@ -365,7 +395,11 @@ async def claims_worker_loop() -> None:
     logger.info("Claims worker 已启动，轮询间隔 %.1fs", _POLL_INTERVAL)
 
     while True:
+        job = None
         try:
+            # ── Step 0: 运行期回收超时孤儿任务 ──
+            _reclaim_stale_running_jobs()
+
             # ── Step 1: 取下一个可运行的 job ──
             job = _dequeue_next_job()
             if job is None:
@@ -499,8 +533,18 @@ async def claims_worker_loop() -> None:
                     "failed": job.failed or 0,
                 })
 
-                # ── 原子处理一篇 ──
-                paper_result = await process_one_paper_atomically(paper, job, force=force)
+                # ── 原子处理一篇（单篇异常不拖垮整个 job）──
+                try:
+                    paper_result = await process_one_paper_atomically(paper, job, force=force)
+                except Exception as exc:
+                    logger.exception("[Job %s] 单篇处理未预期异常 paper_id=%s", job.id, paper.id)
+                    paper_result = {
+                        "status": "failed",
+                        "written": 0,
+                        "error": str(exc)[:500],
+                        "model_used": "",
+                        "wall_time_seconds": 0,
+                    }
 
                 # ── 广播结果 ──
                 if paper_result["status"] == "success":
@@ -573,9 +617,34 @@ async def claims_worker_loop() -> None:
 
         except asyncio.CancelledError:
             logger.info("Claims worker 收到关闭信号，退出")
+            # 收尾：正在跑的 job 置 interrupted，避免留 running 孤儿
+            try:
+                if job is not None:
+                    cur = _refresh_job(job.id)
+                    if cur and cur.status == JobStatus.RUNNING.value:
+                        _update_job_status(job.id, status=JobStatus.INTERRUPTED.value)
+                        logger.info("[Job %s] 关闭时置 interrupted", job.id)
+            except Exception:
+                logger.exception("关闭收尾重置 job 失败")
             break
         except Exception:
-            logger.exception("Claims worker 未预期异常，继续运行")
+            logger.exception("Claims worker 未预期异常，自愈收尾后继续")
+            # 自愈：把当前在跑的 job 置 failed 收尾，绝不留 running 孤儿
+            try:
+                if job is not None:
+                    cur = _refresh_job(job.id)
+                    if cur and cur.status == JobStatus.RUNNING.value:
+                        _update_job_status(job.id, status=JobStatus.FAILED.value)
+                        await _broadcast(job.id, {
+                            "type": "job_done",
+                            "job_id": job.id,
+                            "status": "failed",
+                            "message": "任务异常已自动收尾，可重新发起",
+                        })
+                        logger.info("[Job %s] 异常自愈置 failed", job.id)
+            except Exception:
+                logger.exception("自愈重置 job 失败")
+            await asyncio.sleep(_POLL_INTERVAL)
 
     logger.info("Claims worker 已停止")
 

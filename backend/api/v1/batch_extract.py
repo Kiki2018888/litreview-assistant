@@ -18,11 +18,21 @@ from fastapi import HTTPException, Request
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session
 
-from backend.config import DEFAULT_MODEL, DEFAULT_TEMPERATURE, MAX_RETRIES, RETRY_BASE_DELAY
+from backend.config import (
+    BATCH_EXTRACT_CONCURRENCY,
+    DEFAULT_TEMPERATURE,
+    MAX_RETRIES,
+    RETRY_BASE_DELAY,
+)
 from backend.models.tables import ExtractedData, Paper, PaperPage, PaperStatus, Project
 from backend.services.db import SessionLocal
 from backend.services.extract_prompt import build_extract_prompt
+from backend.api.v1.literature_extract import (
+    _is_retryable_error,
+    _retry_after_seconds,
+)
 from backend.services.extract_service import (
+    ExtractQualityError,
     JSONParseError,
     ParseResult,
     _MAX_REPAIR_ATTEMPTS,
@@ -109,11 +119,189 @@ def _load_pending_papers(project_id: Optional[str]) -> tuple[list[Paper], int]:
         db.close()
 
 
+async def _extract_one_paper(
+    client: KimiClient,
+    paper: Paper,
+    idx: int,
+    total: int,
+    queue: "asyncio.Queue",
+) -> None:
+    """并发处理单篇文献：AI 提取 + 解析修复 + 写库，进度事件推入 queue。
+
+    并发安全：每次 DB 操作各用独立短事务 Session，写锁由 WAL + busy_timeout 兜底。
+    末个事件带 _final=True 供编排层计数。
+    """
+    paper_id = paper.id
+    display_title = paper.title or paper_id[:8]
+
+    # ── 读全文 ──
+    db_text = SessionLocal()
+    try:
+        full_text = _get_full_text(db_text, paper_id)
+    finally:
+        db_text.close()
+
+    if not full_text.strip():
+        db_f1 = SessionLocal()
+        try:
+            p = db_f1.query(Paper).filter(Paper.id == paper_id).first()
+            if p:
+                # 不锁死：全文为空也回退 pending 可重提
+                p.status = PaperStatus.PENDING.value
+                p.last_error = "全文为空，无法提取（可重提）"
+                db_f1.commit()
+        finally:
+            db_f1.close()
+        await queue.put({
+            "_final": True, "type": "progress", "current": idx, "total": total,
+            "paper_id": paper_id, "status": "failed", "title": display_title,
+            "error": "全文为空",
+        })
+        return
+
+    prompt = build_extract_prompt(full_text)
+
+    # ── 置 extracting + attempts++ ──
+    db_st = SessionLocal()
+    try:
+        p = db_st.query(Paper).filter(Paper.id == paper_id).first()
+        if p:
+            p.status = PaperStatus.EXTRACTING.value
+            p.extraction_attempts = (p.extraction_attempts or 0) + 1
+            p.last_error = None
+            db_st.commit()
+    finally:
+        db_st.close()
+
+    await queue.put({
+        "type": "progress", "current": idx, "total": total,
+        "paper_id": paper_id, "status": "extracting", "title": display_title,
+    })
+
+    # ── AI 调用（退避重试 + 错误分类）──
+    full_response = ""
+    extract_ok = False
+    last_error: Optional[Exception] = None
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            completion = await client._client.chat.completions.create(
+                model=client._model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=DEFAULT_TEMPERATURE,
+                max_tokens=_EXTRACT_MAX_TOKENS,
+                response_format={"type": "json_object"},
+            )
+            full_response = completion.choices[0].message.content or ""
+            extract_ok = True
+            break
+        except Exception as exc:
+            last_error = exc
+            retryable = _is_retryable_error(exc)
+            if retryable and attempt < MAX_RETRIES:
+                delay = _retry_after_seconds(exc, RETRY_BASE_DELAY * (2 ** attempt))
+                await asyncio.sleep(delay)
+            else:
+                if not retryable:
+                    logger.error("批提取遇不可重试错误 paper_id=%s: %s", paper_id, exc)
+                else:
+                    logger.error(
+                        "批提取失败 paper_id=%s，已用尽 %d 次重试: %s",
+                        paper_id, MAX_RETRIES + 1, exc,
+                    )
+                break
+
+    if not extract_ok and last_error:
+        full_response = str(last_error)
+
+    # ── 解析 + 修复循环 ──
+    parse_result = None
+    repair_errors: list[str] = []
+    if extract_ok:
+        try:
+            parse_result = parse_and_validate(full_response)
+        except (JSONParseError, ExtractQualityError, PydanticValidationError) as e:
+            repair_errors = _extract_validation_errors(e)
+
+        repair_attempt = 0
+        while parse_result is None and repair_attempt < _MAX_REPAIR_ATTEMPTS:
+            repair_attempt += 1
+            repair_prompt = build_repair_prompt(full_text, repair_errors)
+            try:
+                completion = await client._client.chat.completions.create(
+                    model=client._model,
+                    messages=[{"role": "user", "content": repair_prompt}],
+                    temperature=DEFAULT_TEMPERATURE,
+                    max_tokens=_EXTRACT_MAX_TOKENS,
+                    response_format={"type": "json_object"},
+                )
+                repair_response = completion.choices[0].message.content or ""
+            except Exception:
+                continue
+            try:
+                parse_result = parse_and_validate(repair_response)
+            except (JSONParseError, ExtractQualityError, PydanticValidationError) as e:
+                repair_errors = _extract_validation_errors(e)
+
+    # ── 写库（独立短事务）──
+    db_res = SessionLocal()
+    try:
+        p = db_res.query(Paper).filter(Paper.id == paper_id).first()
+        if not p:
+            await queue.put({
+                "_final": True, "type": "progress", "current": idx, "total": total,
+                "paper_id": paper_id, "status": "failed", "title": display_title,
+                "error": "文献已不存在",
+            })
+            return
+
+        if parse_result is not None:
+            extracted = parse_result.data
+            p.status = PaperStatus.COMPLETED.value
+            p.extracted_at = datetime.utcnow()
+            if parse_result.partial:
+                p.last_error = "部分成功：缺失字段 " + ", ".join(parse_result.missing_fields)
+            else:
+                p.last_error = None
+            _save_extracted(db_res, paper_id, parse_result)
+            if extracted.get("title") and not p.title:
+                p.title = extracted["title"]
+            if extracted.get("authors") and not p.authors:
+                p.authors = extracted["authors"]
+            if extracted.get("year") and not p.year:
+                p.year = extracted["year"]
+            if extracted.get("journal") and not p.journal:
+                p.journal = extracted["journal"]
+            db_res.commit()
+            await queue.put({
+                "_final": True, "type": "progress", "current": idx, "total": total,
+                "paper_id": paper_id, "status": "completed", "title": display_title,
+                "partial": parse_result.partial,
+            })
+        else:
+            # 不锁死：批量失败统一回退 pending 可直接重提
+            if extract_ok and repair_errors:
+                p.status = PaperStatus.PENDING.value
+                p.last_error = ("解析失败（可重提）: " + "; ".join(repair_errors[:5]))[:500]
+            else:
+                p.status = PaperStatus.PENDING.value
+                p.last_error = (
+                    f"调用失败（可重提）: {full_response}" if full_response else "未知错误"
+                )[:500]
+            db_res.commit()
+            await queue.put({
+                "_final": True, "type": "progress", "current": idx, "total": total,
+                "paper_id": paper_id, "status": "failed", "title": display_title,
+                "error": (p.last_error or "未知错误")[:200],
+            })
+    finally:
+        db_res.close()
+
+
 async def stream_project_batch_extract(
     project_id: str,
     request: Request,
 ) -> AsyncIterator[str]:
-    """按项目批量提取 pending 文献，SSE 事件流."""
+    """按项目批量提取 pending 文献，SSE 事件流（保守并发版）."""
     try:
         papers, total = _load_pending_papers(project_id)
     except HTTPException as exc:
@@ -133,198 +321,53 @@ async def stream_project_batch_extract(
     fail_count = 0
     client = KimiClient()
 
-    for idx, paper in enumerate(papers, start=1):
-        if await request.is_disconnected():
-            logger.info("批提取客户端断开，已处理 %d/%d", idx - 1, total)
-            break
+    # 保守并发：上限 = min(配置并发, 篇数)，多路并行 AI 调用、独立短事务写库
+    concurrency = max(1, min(BATCH_EXTRACT_CONCURRENCY, total))
+    sem = asyncio.Semaphore(concurrency)
+    queue: asyncio.Queue = asyncio.Queue()
+    cancelled = asyncio.Event()
+    logger.info("批量提取启动：%d 篇，并发 %d", total, concurrency)
 
-        paper_id = paper.id
-        display_title = paper.title or paper_id[:8]
+    async def _runner(idx: int, paper: Paper) -> None:
+        async with sem:
+            if cancelled.is_set():
+                await queue.put({
+                    "_final": True, "type": "progress", "current": idx, "total": total,
+                    "paper_id": paper.id, "status": "skipped",
+                    "title": paper.title or paper.id[:8],
+                })
+                return
+            await _extract_one_paper(client, paper, idx, total, queue)
 
-        db_text = SessionLocal()
-        try:
-            full_text = _get_full_text(db_text, paper_id)
-        finally:
-            db_text.close()
+    tasks = [
+        asyncio.create_task(_runner(i, p))
+        for i, p in enumerate(papers, start=1)
+    ]
 
-        if not full_text.strip():
-            db_f1 = SessionLocal()
-            try:
-                p = db_f1.query(Paper).filter(Paper.id == paper_id).first()
-                if p:
-                    p.status = PaperStatus.FAILED.value
-                    p.last_error = "全文为空，无法提取"
-                    db_f1.commit()
-            finally:
-                db_f1.close()
-
-            fail_count += 1
-            yield _sse_msg({
-                "type": "progress",
-                "current": idx,
-                "total": total,
-                "paper_id": paper_id,
-                "status": "failed",
-                "title": display_title,
-                "error": "全文为空",
-            })
-            await asyncio.sleep(_BATCH_INTERVAL)
-            continue
-
-        prompt = build_extract_prompt(full_text)
-
-        db_st = SessionLocal()
-        try:
-            p = db_st.query(Paper).filter(Paper.id == paper_id).first()
-            if p:
-                p.status = PaperStatus.EXTRACTING.value
-                p.extraction_attempts = (p.extraction_attempts or 0) + 1
-                p.last_error = None
-                db_st.commit()
-        finally:
-            db_st.close()
-
-        if await request.is_disconnected():
-            break
-
-        yield _sse_msg({
-            "type": "progress",
-            "current": idx,
-            "total": total,
-            "paper_id": paper_id,
-            "status": "extracting",
-            "title": display_title,
-        })
-
-        full_response = ""
-        extract_ok = False
-        last_error: Optional[Exception] = None
-
-        for attempt in range(MAX_RETRIES + 1):
+    try:
+        remaining = total
+        while remaining > 0:
             if await request.is_disconnected():
+                logger.info("批提取客户端断开，取消剩余任务")
+                cancelled.set()
                 break
             try:
-                completion = await client._client.chat.completions.create(
-                    model=DEFAULT_MODEL,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=DEFAULT_TEMPERATURE,
-                    max_tokens=_EXTRACT_MAX_TOKENS,
-                    response_format={"type": "json_object"},
-                )
-                full_response = completion.choices[0].message.content or ""
-                extract_ok = True
-                break
-            except Exception as exc:
-                last_error = exc
-                if attempt < MAX_RETRIES:
-                    delay = RETRY_BASE_DELAY * (2 ** attempt)
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(
-                        "批提取失败 paper_id=%s，已用尽 %d 次重试: %s",
-                        paper_id,
-                        MAX_RETRIES + 1,
-                        exc,
-                    )
-
-        if not extract_ok and last_error:
-            full_response = str(last_error)
-
-        # ── 解析 + 校验 + 修复循环（ADR-2 质量契约）──
-        parse_result = None
-        repair_errors: list[str] = []
-
-        if extract_ok:
-            try:
-                parse_result = parse_and_validate(full_response)
-            except (JSONParseError, PydanticValidationError) as e:
-                repair_errors = _extract_validation_errors(e)
-
-            # 修复循环
-            repair_attempt = 0
-            while parse_result is None and repair_attempt < _MAX_REPAIR_ATTEMPTS:
-                repair_attempt += 1
-                if await request.is_disconnected():
-                    break
-
-                repair_prompt = build_repair_prompt(full_text, repair_errors)
-                try:
-                    completion = await client._client.chat.completions.create(
-                        model=DEFAULT_MODEL,
-                        messages=[{"role": "user", "content": repair_prompt}],
-                        temperature=DEFAULT_TEMPERATURE,
-                        max_tokens=_EXTRACT_MAX_TOKENS,
-                        response_format={"type": "json_object"},
-                    )
-                    repair_response = completion.choices[0].message.content or ""
-                except Exception:
-                    continue
-
-                try:
-                    parse_result = parse_and_validate(repair_response)
-                except (JSONParseError, PydanticValidationError) as e:
-                    repair_errors = _extract_validation_errors(e)
-
-        db_res = SessionLocal()
-        try:
-            p = db_res.query(Paper).filter(Paper.id == paper_id).first()
-            if not p:
+                ev = await asyncio.wait_for(queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
                 continue
-
-            if parse_result is not None:
-                extracted = parse_result.data
-                p.status = PaperStatus.COMPLETED.value
-                p.extracted_at = datetime.utcnow()
-                p.last_error = None
-                _save_extracted(db_res, paper_id, parse_result)
-                if extracted.get("title") and not p.title:
-                    p.title = extracted["title"]
-                if extracted.get("authors") and not p.authors:
-                    p.authors = extracted["authors"]
-                if extracted.get("year") and not p.year:
-                    p.year = extracted["year"]
-                if extracted.get("journal") and not p.journal:
-                    p.journal = extracted["journal"]
-                db_res.commit()
-                success_count += 1
-                yield _sse_msg({
-                    "type": "progress",
-                    "current": idx,
-                    "total": total,
-                    "paper_id": paper_id,
-                    "status": "completed",
-                    "title": display_title,
-                })
-            else:
-                attempts = p.extraction_attempts or 0
-                if extract_ok and repair_errors:
-                    # API 调用成功但质量不达标
-                    p.status = PaperStatus.EXTRACT_FAILED.value
-                    p.last_error = (
-                        f"质量校验失败（修复{_MAX_REPAIR_ATTEMPTS}次）: "
-                        + "; ".join(repair_errors[:5])
-                    )[:500]
-                elif attempts >= MAX_RETRIES:
-                    p.status = PaperStatus.EXTRACT_FAILED.value
-                    p.last_error = (full_response or "未知错误")[:500]
-                else:
-                    p.status = PaperStatus.PENDING.value
-                    p.last_error = (full_response or "未知错误")[:500]
-                db_res.commit()
-                fail_count += 1
-                yield _sse_msg({
-                    "type": "progress",
-                    "current": idx,
-                    "total": total,
-                    "paper_id": paper_id,
-                    "status": "failed",
-                    "title": display_title,
-                    "error": (p.last_error or "未知错误")[:200],
-                })
-        finally:
-            db_res.close()
-
-        await asyncio.sleep(_BATCH_INTERVAL)
+            is_final = ev.pop("_final", False)
+            yield _sse_msg(ev)
+            if is_final:
+                remaining -= 1
+                if ev.get("status") == "completed":
+                    success_count += 1
+                elif ev.get("status") == "failed":
+                    fail_count += 1
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     yield _sse_msg({
         "type": "done",

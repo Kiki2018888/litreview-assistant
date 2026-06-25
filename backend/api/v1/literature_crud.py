@@ -44,6 +44,7 @@ from backend.models.schemas import (
 )
 from backend.models.tables import (
     ChatSession,
+    Claim,
     ExtractedData,
     Paper,
     PaperPage,
@@ -360,7 +361,8 @@ def list_papers(
     papers = db.execute(stmt.offset(offset).limit(page_size)).scalars().all()
 
     # ── 批量加载标签与项目名 ──
-    tags_map = _batch_load_tags(db, [p.id for p in papers])
+    paper_id_list = [p.id for p in papers]
+    tags_map = _batch_load_tags(db, paper_id_list)
     project_ids = {p.project_id for p in papers if p.project_id}
     project_names: dict[str, str] = {}
     if project_ids:
@@ -368,6 +370,16 @@ def list_papers(
             select(Project.id, Project.name).where(Project.id.in_(project_ids))
         ).all()
         project_names = {row[0]: row[1] for row in rows}
+
+    # ── 批量加载每篇 claims 数（供列表显示"已抽 claims"标识）──
+    claims_count_map: dict[str, int] = {}
+    if paper_id_list:
+        crows = db.execute(
+            select(Claim.paper_id, func.count(Claim.id))
+            .where(Claim.paper_id.in_(paper_id_list))
+            .group_by(Claim.paper_id)
+        ).all()
+        claims_count_map = {row[0]: row[1] for row in crows}
 
     items = [
         PaperListItem(
@@ -381,6 +393,7 @@ def list_papers(
             project_id=p.project_id,
             project_name=project_names.get(p.project_id) if p.project_id else None,
             created_at=p.created_at,  # type: ignore[arg-type]
+            claims_count=claims_count_map.get(p.id, 0),
         )
         for p in papers
     ]

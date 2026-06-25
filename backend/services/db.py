@@ -58,7 +58,8 @@ def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):  # noqa: A
         try:
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA busy_timeout=5000")
+            # 写锁等待 15s：并发提取时多个短事务排队写库，避免 database is locked
+            cursor.execute("PRAGMA busy_timeout=15000")
         finally:
             cursor.close()
 

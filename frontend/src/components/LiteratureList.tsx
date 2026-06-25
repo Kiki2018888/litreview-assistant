@@ -12,6 +12,7 @@ import {
   X,
   MoreVertical,
   Trash2,
+  Quote,
 } from "lucide-react"
 import { toast } from "sonner"
 import { cn } from "../lib/utils"
@@ -469,6 +470,15 @@ export default function LiteratureList({
                       <span className="line-clamp-2 font-medium" title={paper.title ?? undefined}>
                         {truncateTitle(paper.title)}
                       </span>
+                      {paper.claims_count > 0 && (
+                        <span
+                          className="mt-1 inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
+                          title="已抽取 claims，点击行查看详情"
+                        >
+                          <Quote className="h-3 w-3" />
+                          {paper.claims_count} 条 claims
+                        </span>
+                      )}
                     </td>
                     <td className="hidden px-3 py-2.5 text-muted-foreground md:table-cell">
                       <span className="line-clamp-1 text-xs">

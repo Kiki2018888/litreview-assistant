@@ -67,6 +67,32 @@ export interface PaperListItem {
   project_id: string | null
   project_name: string | null
   created_at: string
+  claims_count: number
+}
+
+/** ClaimItem — 单条 claim（文献库详情/列表查看用） */
+export interface ClaimItem {
+  id: string
+  claim_form: string
+  subject: string | null
+  topic: string | null
+  direction: string | null
+  comparison_result: string | null
+  magnitude: string | null
+  stat_support: boolean
+  is_limitation: boolean
+  quote: string
+  quote_page: number
+  quote_status: string | null
+  notes: string | null
+}
+
+/** ClaimsListResponse — claims 列表响应 */
+export interface ClaimsListResponse {
+  project_id: string
+  paper_id: string | null
+  total: number
+  claims: ClaimItem[]
 }
 
 /** PaperDetailResponse — 文献详情（含 tags 与 extracted_data） */

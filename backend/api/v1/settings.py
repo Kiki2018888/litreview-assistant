@@ -22,16 +22,18 @@ from sqlalchemy.orm import Session
 
 from backend.config import (
     DEFAULT_MAX_TOKENS,
-    DEFAULT_MODEL,
     DEFAULT_TEMPERATURE,
 )
 from backend.models.schemas import SettingUpdate
 from backend.models.tables import Setting
 from backend.services.api_provider import (
+    DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_MOONSHOT_BASE_URL,
     PROVIDER_AUTO,
+    PROVIDER_DEEPSEEK,
     VALID_PROVIDERS,
     available_models_for_provider,
+    default_model_for_provider,
     infer_provider,
     load_runtime_config_from_db,
     resolve_api_config,
@@ -88,9 +90,9 @@ def _ensure_settings_row(db: Session) -> Setting:
     if not row:
         row = Setting(
             id=1,
-            api_provider=PROVIDER_AUTO,
-            api_base_url=DEFAULT_MOONSHOT_BASE_URL,
-            default_model=DEFAULT_MODEL,
+            api_provider=PROVIDER_DEEPSEEK,
+            api_base_url=DEFAULT_DEEPSEEK_BASE_URL,
+            default_model=default_model_for_provider(PROVIDER_DEEPSEEK),
             temperature=DEFAULT_TEMPERATURE,
             max_tokens=DEFAULT_MAX_TOKENS,
             theme="system",

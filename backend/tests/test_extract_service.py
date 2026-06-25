@@ -4,9 +4,9 @@ from __future__ import annotations
 import json
 
 import pytest
-from pydantic import ValidationError as PydanticValidationError
 
 from backend.services.extract_service import (
+    ExtractQualityError,
     JSONParseError,
     _MAX_REPAIR_ATTEMPTS,
     build_repair_prompt,
@@ -41,8 +41,8 @@ class TestParseAndValidate:
         assert result.contract.research_question == "How does X affect Y?"
         assert result.contract.key_data == ["X increased by 2.3-fold (p<0.01)"]
 
-    def test_missing_required_field_fails(self):
-        """缺必填字段 research_question → 校验失败."""
+    def test_missing_required_field_marked_partial(self):
+        """放宽后：核心字段为空 → 不判死，标记 partial."""
         data = json.dumps({
             "research_question": "",
             "sample_source": "Human plasma",
@@ -50,13 +50,12 @@ class TestParseAndValidate:
             "key_data": ["n=30"],
             "limitations": ["Only in vitro"],
         })
-        with pytest.raises(PydanticValidationError) as exc_info:
-            parse_and_validate(data)
-        errors = exc_info.value.errors()
-        assert any("research_question" in str(e["loc"]) for e in errors)
+        result = parse_and_validate(data)
+        assert result.partial is True
+        assert "research_question" in result.missing_fields
 
-    def test_key_data_no_numeric_fails(self):
-        """key_data 无具体数值 → 校验失败."""
+    def test_key_data_no_numeric_kept(self):
+        """放宽后：key_data 无数值 → 保留内容，不判死."""
         data = json.dumps({
             "research_question": "Q",
             "sample_source": "S",
@@ -64,12 +63,12 @@ class TestParseAndValidate:
             "key_data": ["显著增加"],
             "limitations": ["L"],
         })
-        with pytest.raises(PydanticValidationError) as exc_info:
-            parse_and_validate(data)
-        assert "缺少具体数值" in str(exc_info.value)
+        result = parse_and_validate(data)
+        assert result.contract.key_data == ["显著增加"]
+        assert "key_data" not in result.missing_fields
 
-    def test_limitations_empty_fails(self):
-        """limitations 为空 → 校验失败."""
+    def test_limitations_empty_marked_partial(self):
+        """放宽后：limitations 为空 → 标记 partial，不判死."""
         data = json.dumps({
             "research_question": "Q",
             "sample_source": "S",
@@ -77,36 +76,26 @@ class TestParseAndValidate:
             "key_data": ["n=30"],
             "limitations": [],
         })
-        with pytest.raises(PydanticValidationError) as exc_info:
-            parse_and_validate(data)
-        errors = exc_info.value.errors()
-        assert any("limitations" in str(e["loc"]) for e in errors)
+        result = parse_and_validate(data)
+        assert result.partial is True
+        assert "limitations" in result.missing_fields
 
-    def test_omit_key_data_field_fails(self):
-        """完全 omit key_data 字段 → 校验失败（防整字段省略绕过）."""
+    def test_omit_key_data_field_marked_partial(self):
+        """放宽后：省略 key_data → partial，保留其余字段入库."""
         data = json.dumps({
             "research_question": "Q",
             "sample_source": "S",
             "conclusion": "C",
             "limitations": ["Only in vitro"],
         })
-        with pytest.raises(PydanticValidationError) as exc_info:
-            parse_and_validate(data)
-        errors = exc_info.value.errors()
-        assert any("key_data" in str(e["loc"]) for e in errors)
+        result = parse_and_validate(data)
+        assert result.partial is True
+        assert "key_data" in result.missing_fields
 
-    def test_omit_limitations_field_fails(self):
-        """完全 omit limitations 字段 → 校验失败（防整字段省略绕过）."""
-        data = json.dumps({
-            "research_question": "Q",
-            "sample_source": "S",
-            "conclusion": "C",
-            "key_data": ["n=30"],
-        })
-        with pytest.raises(PydanticValidationError) as exc_info:
-            parse_and_validate(data)
-        errors = exc_info.value.errors()
-        assert any("limitations" in str(e["loc"]) for e in errors)
+    def test_completely_empty_still_fails(self):
+        """最低门槛：完全空响应仍判失败."""
+        with pytest.raises(ExtractQualityError):
+            parse_and_validate(json.dumps({}))
 
     def test_key_data_with_percent_passes(self):
         """key_data 含百分比 → 通过."""
