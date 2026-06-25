@@ -129,3 +129,11 @@ outputs/
 /_*.bin
 /$null
 /screenshot_*.png
+
+# ---------- 内部规格/规划文档（不公开；本地保留） ----------
+ResearchAssistant_SPEC_v1.1.0.md
+ResearchAssistant_SPEC_v1_2_0.md
+ResearchAssistant_SPEC_v1_3_0.md
+开发进度规划.md
+开发进度规划2.0.md
+开发进度规划2.1.md
