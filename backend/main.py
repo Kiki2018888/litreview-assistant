@@ -123,12 +123,12 @@ async def lifespan(app: FastAPI):
             if zombie_jobs:
                 logger.info("启动重置：%d 个 Job running/paused → interrupted", len(zombie_jobs))
 
-    # 启动 claims worker
+    # 启动 extract worker（claims + 摘要）
     import asyncio as _asyncio
-    from backend.services.extract_job_worker import claims_worker_loop
+    from backend.services.extract_job_worker import extract_worker_loop
 
-    worker_task = _asyncio.create_task(claims_worker_loop())
-    logger.info("Claims worker 已启动")
+    worker_task = _asyncio.create_task(extract_worker_loop())
+    logger.info("Extract worker 已启动（claims + 摘要）")
 
     yield
 
@@ -200,6 +200,7 @@ from backend.api.v1.chat_sessions import router as chat_sessions_router
 from backend.api.v1.paper import router as paper_router
 from backend.api.v1.adjudication import router as adjudication_router
 from backend.api.v1.claims import router as claims_router, estimate_router, jobs_router
+from backend.api.v1.summary_extract import router as summary_extract_router
 
 # 固定路径路由器先注册：POST /chat 优先于 /{paper_id}
 app.include_router(literature_chat_router)
@@ -215,6 +216,7 @@ app.include_router(chat_sessions_router)
 app.include_router(paper_router, prefix="/api/v1")
 app.include_router(adjudication_router)
 app.include_router(claims_router)
+app.include_router(summary_extract_router)
 app.include_router(estimate_router)
 app.include_router(jobs_router)
 

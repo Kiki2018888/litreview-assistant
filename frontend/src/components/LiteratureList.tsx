@@ -86,6 +86,8 @@ interface LiteratureListProps {
   onProjectFilterChange?: (projectId: string) => void
   /** 删除成功后回调（刷新计数等） */
   onDeleted?: (deletedIds: string[]) => void
+  /** 有后台任务进行中时提高列表刷新频率（毫秒，0=不额外轮询） */
+  pollIntervalMs?: number
 }
 
 // ============================================================================
@@ -102,6 +104,7 @@ export default function LiteratureList({
   projectFilter = "",
   onProjectFilterChange,
   onDeleted,
+  pollIntervalMs = 0,
 }: LiteratureListProps) {
   // ── 数据状态 ──
   const [papers, setPapers] = useState<PaperListItem[]>([])
@@ -212,6 +215,15 @@ export default function LiteratureList({
   useEffect(() => {
     fetchPapers()
   }, [fetchPapers, refreshKey])
+
+  // 后台任务进行中：轻量轮询保持列表状态与实际一致
+  useEffect(() => {
+    if (!pollIntervalMs || pollIntervalMs <= 0) return
+    const timer = setInterval(() => {
+      fetchPapers()
+    }, pollIntervalMs)
+    return () => clearInterval(timer)
+  }, [pollIntervalMs, fetchPapers])
 
   useEffect(() => {
     const timer = setTimeout(() => {

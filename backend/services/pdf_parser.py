@@ -10,7 +10,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from backend.config import SCANNED_PAGE_MIN_CHARS
+from backend.config import (
+    SCANNED_DOC_AVG_MIN_CHARS,
+    SCANNED_DOC_MIN_CHARS,
+    SCANNED_EFFECTIVE_PAGE_RATIO,
+    SCANNED_PAGE_MIN_CHARS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +53,7 @@ class ParsedPDF:
     page_count: int                        # 总页数
     pages: list[PageInfo]                  # 每页信息
     total_chars: int                       # 总字符数
-    is_scanned: bool                       # 是否为扫描版（任一页字符 < 阈值）
+    is_scanned: bool                       # 是否为扫描版（全篇维度判定）
     metadata: PaperMetadata = field(default_factory=PaperMetadata)
     parser_used: str = ""                  # 实际使用的解析器名称
 
@@ -198,6 +203,44 @@ def _extract_metadata_pymupdf(file_path: str) -> PaperMetadata:
 
 
 # ---------------------------------------------------------------------------
+# 扫描版检测（全篇维度）
+# ---------------------------------------------------------------------------
+
+
+def is_document_scanned(char_counts: list[int]) -> bool:
+    """根据各页字符数判定整篇 PDF 是否为扫描版.
+
+    真扫描版：全篇几乎无字。单页空白（图/表/分隔页）不得拖垮全篇。
+    满足以下任一条件即判为扫描版：
+    - 全篇总字符 < SCANNED_DOC_MIN_CHARS
+    - 平均每页字符 < SCANNED_DOC_AVG_MIN_CHARS
+    - 有效页（字符 >= SCANNED_PAGE_MIN_CHARS）占比 < SCANNED_EFFECTIVE_PAGE_RATIO
+    """
+    if not char_counts:
+        return True
+    total_chars = sum(char_counts)
+    page_count = len(char_counts)
+    effective_pages = sum(1 for c in char_counts if c >= SCANNED_PAGE_MIN_CHARS)
+    avg_chars = total_chars / page_count
+    effective_ratio = effective_pages / page_count
+    if total_chars < SCANNED_DOC_MIN_CHARS:
+        return True
+    if avg_chars < SCANNED_DOC_AVG_MIN_CHARS:
+        return True
+    if effective_ratio < SCANNED_EFFECTIVE_PAGE_RATIO:
+        return True
+    return False
+
+
+def _mark_pages_and_detect_scanned(pages: list[PageInfo]) -> bool:
+    """标记每页是否稀疏，并返回全篇是否扫描版."""
+    for p in pages:
+        p.is_scanned = p.char_count < SCANNED_PAGE_MIN_CHARS
+    char_counts = [p.char_count for p in pages]
+    return is_document_scanned(char_counts)
+
+
+# ---------------------------------------------------------------------------
 # 公共接口
 # ---------------------------------------------------------------------------
 
@@ -243,12 +286,8 @@ def parse_pdf(file_path: str) -> ParsedPDF:
             "请检查文件是否损坏或为加密 PDF。"
         )
 
-    # 检测扫描版：任一页字符少于阈值即标记
-    is_scanned = False
-    for p in pages:
-        if p.char_count < SCANNED_PAGE_MIN_CHARS:
-            p.is_scanned = True
-            is_scanned = True
+    # 检测扫描版：全篇维度（单页空白不否决全篇）
+    is_scanned = _mark_pages_and_detect_scanned(pages)
 
     total_chars = sum(p.char_count for p in pages)
 
@@ -285,6 +324,7 @@ def extract_full_text(file_path: str) -> str:
 __all__ = [
     "parse_pdf",
     "extract_full_text",
+    "is_document_scanned",
     "ParsedPDF",
     "PageInfo",
     "PaperMetadata",

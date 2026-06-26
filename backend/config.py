@@ -61,7 +61,7 @@ _ensure_dirs()
 # 应用级常量（非配置项）
 # ---------------------------------------------------------------------------
 
-VERSION = "1.2.0"
+VERSION = "1.2.5"
 
 # .env 文件路径：显式锚定绝对路径，不依赖 cwd。
 # - 开发模式：项目根/.env
@@ -115,8 +115,11 @@ class Settings(BaseSettings):
     max_retries: int = 3
     retry_base_delay: float = 1.0  # 秒，指数退避：1 → 2 → 4
 
-    # ---- 扫描版检测 ----
-    scanned_page_min_chars: int = 50
+    # ---- 扫描版检测（全篇维度，单页空白不拖垮全篇）----
+    scanned_page_min_chars: int = 50          # 单页“有效文本”下限（用于有效页比例）
+    scanned_doc_min_chars: int = 500          # 全篇总字符低于此 → 扫描版
+    scanned_doc_avg_min_chars: int = 50       # 平均每页字符低于此 → 扫描版
+    scanned_effective_page_ratio: float = 0.3  # 有效页占比低于此 → 扫描版
 
     # ---- 后端服务 ----
     host: str = "127.0.0.1"
@@ -144,6 +147,9 @@ BATCH_EXTRACT_CONCURRENCY = settings.batch_extract_concurrency
 MAX_RETRIES = settings.max_retries
 RETRY_BASE_DELAY = settings.retry_base_delay
 SCANNED_PAGE_MIN_CHARS = settings.scanned_page_min_chars
+SCANNED_DOC_MIN_CHARS = settings.scanned_doc_min_chars
+SCANNED_DOC_AVG_MIN_CHARS = settings.scanned_doc_avg_min_chars
+SCANNED_EFFECTIVE_PAGE_RATIO = settings.scanned_effective_page_ratio
 MAX_UPLOAD_FILE_SIZE_MB = settings.max_upload_file_size_mb
 MAX_UPLOAD_FILE_COUNT = settings.max_upload_file_count
 DEEPSEEK_BASE_URL = settings.deepseek_base_url
@@ -171,6 +177,9 @@ __all__ = [
     "MAX_RETRIES",
     "RETRY_BASE_DELAY",
     "SCANNED_PAGE_MIN_CHARS",
+    "SCANNED_DOC_MIN_CHARS",
+    "SCANNED_DOC_AVG_MIN_CHARS",
+    "SCANNED_EFFECTIVE_PAGE_RATIO",
     "MAX_UPLOAD_FILE_SIZE_MB",
     "MAX_UPLOAD_FILE_COUNT",
     "DEEPSEEK_BASE_URL",

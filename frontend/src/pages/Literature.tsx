@@ -7,7 +7,7 @@ import ChatPanel from "../components/ChatPanel"
 import { apiGet, apiPost } from "../api/client"
 import { useSSE } from "../hooks/useSSE"
 import { toast } from "sonner"
-import { Gavel, GitBranch, Loader2, Clock } from "lucide-react"
+import { Gavel, GitBranch, Loader2, Clock, FileText } from "lucide-react"
 import { COMING_SOON_MESSAGE } from "../components/ComingSoon"
 import type { Project, ProjectListResponse, ClaimsExtractStartResponse } from "../types"
 
@@ -44,12 +44,19 @@ export default function Literature() {
   const [detailPaperId, setDetailPaperId] = useState<string | null>(null)
   const [chatMode, setChatMode] = useState<ChatMode>(null)
 
-  // ── A1: 项目级 Claims 提取 ──
+  // ── 项目级 Claims 提取 ──
   const [claimsExtracting, setClaimsExtracting] = useState(false)
   const [claimsProgress, setClaimsProgress] = useState("")
   const [claimsEstimate, setClaimsEstimate] = useState<string | null>(null)
-  // 独立 useSSE 实例用于 Job 进度（不影响详情页的 useSSE）
   const { start: startClaimsSSE, abort: abortClaimsSSE } = useSSE()
+
+  // ── 批量摘要 Job 提取 ──
+  const [summaryExtracting, setSummaryExtracting] = useState(false)
+  const [summaryProgress, setSummaryProgress] = useState("")
+  const [pendingSummaryCount, setPendingSummaryCount] = useState<number | null>(null)
+  const { start: startSummarySSE, abort: abortSummarySSE } = useSSE()
+
+  const anyTaskRunning = claimsExtracting || summaryExtracting
 
   useEffect(() => {
     apiGet<ProjectListResponse>("/projects/?page=1&page_size=100")
@@ -84,12 +91,26 @@ export default function Literature() {
       .catch(() => setPendingClaimsCount(null))
   }, [projectFilter, refreshKey])
 
+  // 加载待提摘要文献数
+  useEffect(() => {
+    if (!projectFilter) {
+      setPendingSummaryCount(null)
+      return
+    }
+    apiGet<{ pending_count: number }>(
+      `/projects/${projectFilter}/summary-extract/pending-count`
+    )
+      .then((res) => setPendingSummaryCount(res.pending_count))
+      .catch(() => setPendingSummaryCount(null))
+  }, [projectFilter, refreshKey])
+
   // 清理 SSE
   useEffect(() => {
     return () => {
       abortClaimsSSE()
+      abortSummarySSE()
     }
-  }, [abortClaimsSSE])
+  }, [abortClaimsSSE, abortSummarySSE])
 
   const handleProjectFilterChange = useCallback(
     (projectId: string) => {
@@ -219,6 +240,73 @@ export default function Literature() {
     }
   }, [projectFilter, claimsExtracting, projects, startClaimsSSE, handleRefresh])
 
+  // ── 项目级批量摘要（Job） ──
+  const handleProjectExtractSummary = useCallback(async () => {
+    if (!projectFilter || summaryExtracting) return
+    setSummaryExtracting(true)
+    setSummaryProgress("正在创建摘要提取任务…")
+
+    try {
+      const startRes = await apiPost<{
+        job_id: string
+        status: string
+        pending_paper_count: number
+        model: string
+      }>(`/projects/${projectFilter}/summary-extract/start`, { force: false })
+
+      setSummaryProgress(
+        `已提交 · ${startRes.pending_paper_count} 篇待处理 · 模型: ${startRes.model}`
+      )
+
+      startSummarySSE({
+        url: `/projects/${projectFilter}/summary-extract/subscribe?job_id=${startRes.job_id}`,
+        method: "GET",
+        disableRetry: true,
+        maxRetries: 0,
+        onEvent: (event) => {
+          switch (event.type) {
+            case "job_status":
+              setSummaryProgress(`任务状态: ${event.status as string}`)
+              break
+            case "paper_progress": {
+              const idx = event.current as number
+              const tot = event.total as number
+              const t = event.title as string
+              const st = event.status as string
+              setSummaryProgress(
+                `第 ${idx}/${tot} 篇 · ${(t || "").slice(0, 50)} · ${st === "completed" ? "✓" : st === "failed" ? "✗" : "…"}`
+              )
+              handleRefresh()
+              break
+            }
+            case "error":
+              setSummaryProgress(`错误: ${event.message as string}`)
+              toast.error(event.message as string)
+              break
+            case "job_done": {
+              const ok = event.succeeded as number
+              const fail = event.failed as number
+              setSummaryProgress(`摘要提取完成 · 成功 ${ok} 篇${fail > 0 ? `，失败 ${fail} 篇` : ""}`)
+              toast.success(`摘要提取完成: ${ok}/${ok + fail} 篇成功`)
+              handleRefresh()
+              break
+            }
+          }
+        },
+        onError: (msg) => {
+          setSummaryProgress(`连接失败: ${msg}`)
+          toast.error(msg)
+        },
+        onDone: () => {
+          setSummaryExtracting(false)
+        },
+      })
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "创建摘要提取任务失败")
+      setSummaryExtracting(false)
+    }
+  }, [projectFilter, summaryExtracting, startSummarySSE, handleRefresh])
+
   // ── A2: 项目级分析局限（聚类） ──
   // 信号发现模块（局限聚类→裁决）本版未发布，入口统一占位，不再发起任何网络请求。
   // 后端 /projects/{id}/clustering/limitation 路由与服务保留，将来就绪后换回真实实现即可。
@@ -266,10 +354,34 @@ export default function Literature() {
                 {projects.find((p) => p.id === projectFilter)?.name ?? "当前项目"}
               </div>
 
+              {/* 批量提取摘要（Job） */}
+              <button
+                onClick={handleProjectExtractSummary}
+                disabled={summaryExtracting || claimsExtracting}
+                className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30 px-3 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-950/50 transition-colors disabled:opacity-40"
+                title={
+                  pendingSummaryCount !== null
+                    ? `本项目 ${pendingSummaryCount} 篇文献待提取摘要`
+                    : undefined
+                }
+              >
+                {summaryExtracting ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <FileText className="h-3.5 w-3.5" />
+                )}
+                批量提取摘要(本项目)
+                {pendingSummaryCount !== null && (
+                  <span className="text-blue-500/80 dark:text-blue-400/80">
+                    · {pendingSummaryCount} 篇待提
+                  </span>
+                )}
+              </button>
+
               {/* A1: 批量提取 Claims */}
               <button
                 onClick={handleProjectExtractClaims}
-                disabled={claimsExtracting}
+                disabled={claimsExtracting || summaryExtracting}
                 className="inline-flex items-center gap-1.5 rounded-md border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/30 px-3 py-1.5 text-xs font-medium text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-950/50 transition-colors disabled:opacity-40"
                 title={
                   pendingClaimsCount !== null
@@ -308,6 +420,16 @@ export default function Literature() {
               </button>
             </div>
 
+            {/* 摘要提取进度 */}
+            {summaryExtracting && (
+              <div className="px-3 py-1.5 bg-blue-50 dark:bg-blue-950/30 rounded text-xs text-blue-700 dark:text-blue-300">
+                <span className="inline-flex items-center gap-1.5">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {summaryProgress}
+                </span>
+              </div>
+            )}
+
             {/* A3: Claims 提取进度条 */}
             {claimsExtracting && (
               <div className="space-y-0">
@@ -332,6 +454,7 @@ export default function Literature() {
 
         <LiteratureList
           refreshKey={refreshKey}
+          pollIntervalMs={anyTaskRunning ? 4000 : 0}
           selectedIds={selectedIds}
           onSelectionChange={setSelectedIds}
           onSelectPaper={(id) => {

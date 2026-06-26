@@ -41,6 +41,7 @@ from backend.services.extract_job_worker import (
     unsubscribe_job_events,
 )
 from backend.services.kimi_client import get_model_name
+from backend.services.paper_readiness import parsed_papers_in_project
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +218,19 @@ async def extract_claims(
 
     claims_list = result["claims"]
     rejected_list = result["rejected"]
+
+    # Fix1 命门：切块失败（0 块 / PDF 解析异常）→ 返回 4xx 可读错误，不返回 200 假成功。
+    # 区分依据是 no_chunks（分块失败），而非 written==0——切块成功但确无可抽论断的
+    # “合法 0 条”仍会正常 200 返回 written=0。
+    if result.get("no_chunks"):
+        logger.error("claims 抽取切块失败(0 块/PDF 解析异常): paper_id=%s", body.paper_id)
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "PDF 文本解析异常：未能切分章节（可能词间空格丢失），无法抽取 claims。"
+                "请尝试重新解析该 PDF 或更换文件。"
+            ),
+        )
 
     # ── 5. 写入 claims 表（事务保护：全写或全不写）──
     written = 0
@@ -446,28 +460,20 @@ class ClaimsExtractStartRequest(BaseModel):
 
 
 def _pending_claims_paper_ids(db: Session, project_id: str, *, force: bool = False) -> list[str]:
-    """返回项目下待抽取 claims 的文献 ID 列表."""
-    completed_paper_ids = [
-        row[0]
-        for row in db.query(Paper.id)
-        .filter(
-            Paper.project_id == project_id,
-            Paper.status == PaperStatus.COMPLETED.value,
-        )
-        .all()
-    ]
-    if not completed_paper_ids:
+    """返回项目下待抽取 claims 的文献 ID 列表（已解析全文即可，不要求已有摘要）."""
+    parsed_ids = [p.id for p in parsed_papers_in_project(db, project_id)]
+    if not parsed_ids:
         return []
     if force:
-        return completed_paper_ids
+        return parsed_ids
     papers_with_claims = {
         row[0]
         for row in db.query(Claim.paper_id)
-        .filter(Claim.paper_id.in_(completed_paper_ids))
+        .filter(Claim.paper_id.in_(parsed_ids))
         .distinct()
         .all()
     }
-    return [pid for pid in completed_paper_ids if pid not in papers_with_claims]
+    return [pid for pid in parsed_ids if pid not in papers_with_claims]
 
 
 class PendingClaimsCountResponse(BaseModel):
@@ -480,7 +486,7 @@ class PendingClaimsCountResponse(BaseModel):
     summary="待抽取 claims 的文献数量",
 )
 def get_pending_claims_count(project_id: str) -> PendingClaimsCountResponse:
-    """统计项目下已完成解析且尚未抽取 claims 的文献数."""
+    """统计项目下已解析全文且尚未抽取 claims 的文献数."""
     with SessionLocal() as db:
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
@@ -536,7 +542,7 @@ def start_claims_extract(
     project_id: str,
     body: ClaimsExtractStartRequest,
 ) -> ClaimsExtractStartResponse:
-    """对项目下所有已完成全文解析的文献创建 claims_extract Job.
+    """对项目下已解析全文的文献创建 claims_extract Job.
 
     已抽取过 claims 的文献会被防重抽机制自动跳过。
     设置 force=true 可跳过防重抽，对已抽 paper 先删旧 claims 再重新抽取。
@@ -561,12 +567,12 @@ def start_claims_extract(
             pending_paper_ids = _pending_claims_paper_ids(db, project_id, force=False)
 
         if not _pending_claims_paper_ids(db, project_id, force=True):
-            raise HTTPException(status_code=400, detail="项目下无已完成全文解析的文献")
+            raise HTTPException(status_code=400, detail="项目下无可抽取 claims 的文献（需先上传并成功解析 PDF）")
 
         if not pending_paper_ids:
             raise HTTPException(
                 status_code=400,
-                detail="无待抽文献：请先完成摘要解析，或该项目文献已全部抽取过",
+                detail="无待抽文献：该项目文献已全部抽取过 claims，或尚无已解析全文的文献",
             )
 
         # 检查是否有真正进行中的同类型 job：
@@ -662,6 +668,13 @@ async def subscribe_claims_extract(
 
     q = await subscribe_job_events(job_id)
 
+    _TERMINAL_STATUSES = {
+        JobStatus.COMPLETED.value,
+        JobStatus.FAILED.value,
+        JobStatus.CANCELLED.value,
+        JobStatus.INTERRUPTED.value,
+    }
+
     async def event_generator() -> AsyncIterator[str]:
         try:
             # 先发送当前状态
@@ -669,6 +682,11 @@ async def subscribe_claims_extract(
                 job = db.query(ExtractJob).filter(ExtractJob.id == job_id).first()
                 if job:
                     yield f"data: {json.dumps({'type': 'job_status', 'job_id': job.id, 'status': job.status, 'total': job.total, 'succeeded': job.succeeded, 'failed': job.failed, 'current': job.current}, ensure_ascii=False)}\n\n"
+                    # Fix3：若建连时 job 已是终态（建连前就结束），实时广播的 job_done 已错过，
+                    # 这里立即补发一条合成 job_done 并结束流，避免前端永远收不到 → 转圈不停。
+                    if job.status in _TERMINAL_STATUSES:
+                        yield f"data: {json.dumps({'type': 'job_done', 'job_id': job.id, 'status': job.status, 'total': job.total or 0, 'succeeded': job.succeeded or 0, 'failed': job.failed or 0, 'message': '任务已结束'}, ensure_ascii=False)}\n\n"
+                        return
 
             while True:
                 if await request.is_disconnected():

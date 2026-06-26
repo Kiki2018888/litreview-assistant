@@ -126,14 +126,38 @@ async def _extract_one_paper(
     total: int,
     queue: "asyncio.Queue",
 ) -> None:
-    """并发处理单篇文献：AI 提取 + 解析修复 + 写库，进度事件推入 queue。
-
-    并发安全：每次 DB 操作各用独立短事务 Session，写锁由 WAL + busy_timeout 兜底。
-    末个事件带 _final=True 供编排层计数。
-    """
+    """并发处理单篇文献：AI 提取 + 解析修复 + 写库，进度事件推入 queue."""
     paper_id = paper.id
     display_title = paper.title or paper_id[:8]
 
+    try:
+        await _extract_one_paper_inner(client, paper, idx, total, queue, paper_id, display_title)
+    except asyncio.CancelledError:
+        with SessionLocal() as db_f:
+            p = db_f.query(Paper).filter(Paper.id == paper_id).first()
+            if p and p.status == PaperStatus.EXTRACTING.value:
+                p.status = PaperStatus.PENDING.value
+                p.last_error = "批提取任务被取消，可重提"
+                db_f.commit()
+        raise
+    finally:
+        with SessionLocal() as db_f:
+            p = db_f.query(Paper).filter(Paper.id == paper_id).first()
+            if p and p.status == PaperStatus.EXTRACTING.value:
+                p.status = PaperStatus.PENDING.value
+                p.last_error = "批提取中断，可重提"
+                db_f.commit()
+
+
+async def _extract_one_paper_inner(
+    client: KimiClient,
+    paper: Paper,
+    idx: int,
+    total: int,
+    queue: "asyncio.Queue",
+    paper_id: str,
+    display_title: str,
+) -> None:
     # ── 读全文 ──
     db_text = SessionLocal()
     try:

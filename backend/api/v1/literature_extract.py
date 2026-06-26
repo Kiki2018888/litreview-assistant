@@ -34,6 +34,7 @@ from backend.services.extract_service import (
     build_repair_prompt,
     parse_and_validate,
 )
+from backend.services.pdf_parser import is_document_scanned
 from backend.services.kimi_client import (
     KimiClient,
     is_retryable_error,
@@ -168,8 +169,15 @@ async def _do_extract(paper_id: str, request: Request) -> StreamingResponse:
         if not paper:
             raise HTTPException(status_code=404, detail="文献不存在")
 
-        # 扫描版直接跳过
-        if paper.is_scanned:
+        # 扫描版：按 paper_pages 全篇维度重判（不依赖可能过期的 is_scanned 位）
+        char_counts = [
+            p.char_count
+            for p in db.query(PaperPage)
+            .filter(PaperPage.paper_id == paper_id)
+            .order_by(PaperPage.page_number)
+            .all()
+        ]
+        if is_document_scanned(char_counts):
             raise HTTPException(
                 status_code=400,
                 detail="检测到扫描版 PDF，无法自动提取摘要。请手动输入。",
@@ -206,212 +214,226 @@ async def _do_extract(paper_id: str, request: Request) -> StreamingResponse:
 
     async def event_generator():
         """SSE 事件生成器."""
-        yield _sse_msg({
-            "type": "status",
-            "status": "extracting",
-            "attempt": attempts,
-            "max_retries": MAX_RETRIES,
-        })
-
-        # ── 调用 Kimi JSON Mode（指数退避重试，对齐 kimi_client.py）──
-        full_response = ""
-        extract_ok = False
-        last_error: Optional[Exception] = None
-        client = KimiClient()
-
-        for retry_attempt in range(MAX_RETRIES + 1):
-            if await request.is_disconnected():
-                # 客户端断开 → 回退状态
-                _rollback_extracting(paper_id)
-                yield _sse_msg({"type": "cancelled", "message": "客户端已断开"})
-                yield _sse_msg({"type": "done"})
-                return
-
-            try:
-                completion = await client._client.chat.completions.create(
-                    model=client._model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=DEFAULT_TEMPERATURE,
-                    max_tokens=_EXTRACT_MAX_TOKENS,
-                    response_format={"type": "json_object"},
-                )
-                full_response = completion.choices[0].message.content or ""
-                yield _sse_msg({
-                    "type": "chunk",
-                    "content": full_response,
-                })
-                extract_ok = True
-                break
-            except Exception as exc:
-                last_error = exc
-                retryable = _is_retryable_error(exc)
-                if retryable and retry_attempt < MAX_RETRIES:
-                    delay = _retry_after_seconds(exc, RETRY_BASE_DELAY * (2 ** retry_attempt))
-                    logger.warning(
-                        "提取 API 失败(可重试) paper_id=%s (尝试 %d/%d)，%0.1fs 后重试: %s",
-                        paper_id, retry_attempt + 1, MAX_RETRIES + 1, delay, exc,
-                    )
-                    yield _sse_msg({
-                        "type": "retry",
-                        "attempt": retry_attempt + 1,
-                        "max_retries": MAX_RETRIES,
-                        "delay": delay,
-                    })
-                    await asyncio.sleep(delay)
-                else:
-                    if not retryable:
-                        logger.error(
-                            "提取遇不可重试错误 paper_id=%s，立即停止: %s", paper_id, exc,
-                        )
-                    else:
-                        logger.error(
-                            "提取失败 paper_id=%s，已用尽 %d 次重试: %s",
-                            paper_id, MAX_RETRIES + 1, exc,
-                        )
-                    break  # 不可重试 或 重试耗尽 → 退出循环
-
-        # ── 失败处理（ADR 可靠性：回退 pending 可直接重提，不再锁死 EXTRACT_FAILED）──
-        if not extract_ok:
-            db_fail = SessionLocal()
-            try:
-                p = db_fail.query(Paper).filter(Paper.id == paper_id).first()
-                if p:
-                    p.status = PaperStatus.PENDING.value
-                    p.last_error = (
-                        f"调用失败（可重提）: {str(last_error)[:480]}" if last_error else "未知错误"
-                    )
-                    db_fail.commit()
-            finally:
-                db_fail.close()
-
-            yield _sse_msg({
-                "type": "error",
-                "code": "EXTRACT_FAILED",
-                "message": f"提取失败，可重新提取: {str(last_error)[:200]}" if last_error else "未知错误",
-                "attempt": attempts,
-            })
-            yield _sse_msg({"type": "done"})
-            return
-
-        # ── 解析 + 校验 + 修复循环（ADR-2 质量契约）──
-        parse_result = None
-        repair_errors: list[str] = []
-
-        # 首次解析（放宽后：仅 JSON 不可解析 / 完全空响应才会抛错）
         try:
-            parse_result = parse_and_validate(full_response)
-        except (JSONParseError, ExtractQualityError, PydanticValidationError) as e:
-            repair_errors = _extract_validation_errors(e)
-            logger.warning(
-                "首次解析失败 paper_id=%s: %s", paper_id, "; ".join(repair_errors[:3])
-            )
+            yield _sse_msg({
+                "type": "status",
+                "status": "extracting",
+                "attempt": attempts,
+                "max_retries": MAX_RETRIES,
+            })
 
-        # 修复循环
-        repair_attempt = 0
-        while parse_result is None and repair_attempt < _MAX_REPAIR_ATTEMPTS:
-            repair_attempt += 1
-            if await request.is_disconnected():
-                _rollback_extracting(paper_id)
-                yield _sse_msg({"type": "cancelled", "message": "客户端已断开"})
+            # ── 调用 Kimi JSON Mode（指数退避重试，对齐 kimi_client.py）──
+            full_response = ""
+            extract_ok = False
+            last_error: Optional[Exception] = None
+            client = KimiClient()
+
+            for retry_attempt in range(MAX_RETRIES + 1):
+                if await request.is_disconnected():
+                    # 客户端断开 → 回退状态
+                    _rollback_extracting(paper_id)
+                    yield _sse_msg({"type": "cancelled", "message": "客户端已断开"})
+                    yield _sse_msg({"type": "done"})
+                    return
+
+                try:
+                    completion = await client._client.chat.completions.create(
+                        model=client._model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=DEFAULT_TEMPERATURE,
+                        max_tokens=_EXTRACT_MAX_TOKENS,
+                        response_format={"type": "json_object"},
+                    )
+                    full_response = completion.choices[0].message.content or ""
+                    yield _sse_msg({
+                        "type": "chunk",
+                        "content": full_response,
+                    })
+                    extract_ok = True
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    retryable = _is_retryable_error(exc)
+                    if retryable and retry_attempt < MAX_RETRIES:
+                        delay = _retry_after_seconds(exc, RETRY_BASE_DELAY * (2 ** retry_attempt))
+                        logger.warning(
+                            "提取 API 失败(可重试) paper_id=%s (尝试 %d/%d)，%0.1fs 后重试: %s",
+                            paper_id, retry_attempt + 1, MAX_RETRIES + 1, delay, exc,
+                        )
+                        yield _sse_msg({
+                            "type": "retry",
+                            "attempt": retry_attempt + 1,
+                            "max_retries": MAX_RETRIES,
+                            "delay": delay,
+                        })
+                        await asyncio.sleep(delay)
+                    else:
+                        if not retryable:
+                            logger.error(
+                                "提取遇不可重试错误 paper_id=%s，立即停止: %s", paper_id, exc,
+                            )
+                        else:
+                            logger.error(
+                                "提取失败 paper_id=%s，已用尽 %d 次重试: %s",
+                                paper_id, MAX_RETRIES + 1, exc,
+                            )
+                        break  # 不可重试 或 重试耗尽 → 退出循环
+
+            # ── 失败处理（ADR 可靠性：回退 pending 可直接重提，不再锁死 EXTRACT_FAILED）──
+            if not extract_ok:
+                db_fail = SessionLocal()
+                try:
+                    p = db_fail.query(Paper).filter(Paper.id == paper_id).first()
+                    if p:
+                        p.status = PaperStatus.PENDING.value
+                        p.last_error = (
+                            f"调用失败（可重提）: {str(last_error)[:480]}" if last_error else "未知错误"
+                        )
+                        db_fail.commit()
+                finally:
+                    db_fail.close()
+
+                yield _sse_msg({
+                    "type": "error",
+                    "code": "EXTRACT_FAILED",
+                    "message": f"提取失败，可重新提取: {str(last_error)[:200]}" if last_error else "未知错误",
+                    "attempt": attempts,
+                })
                 yield _sse_msg({"type": "done"})
                 return
 
-            yield _sse_msg({
-                "type": "repair",
-                "attempt": repair_attempt,
-                "max_repairs": _MAX_REPAIR_ATTEMPTS,
-                "errors": repair_errors[:5],
-            })
+            # ── 解析 + 校验 + 修复循环（ADR-2 质量契约）──
+            parse_result = None
+            repair_errors: list[str] = []
 
-            repair_prompt = build_repair_prompt(full_text, repair_errors)
+            # 首次解析（放宽后：仅 JSON 不可解析 / 完全空响应才会抛错）
             try:
-                completion = await client._client.chat.completions.create(
-                    model=client._model,
-                    messages=[{"role": "user", "content": repair_prompt}],
-                    temperature=DEFAULT_TEMPERATURE,
-                    max_tokens=_EXTRACT_MAX_TOKENS,
-                    response_format={"type": "json_object"},
-                )
-                repair_response = completion.choices[0].message.content or ""
-            except Exception as repair_exc:
-                logger.warning("修复调用失败 paper_id=%s: %s", paper_id, repair_exc)
-                repair_errors = [f"修复 API 调用失败: {repair_exc}"]
-                continue
-
-            try:
-                parse_result = parse_and_validate(repair_response)
+                parse_result = parse_and_validate(full_response)
             except (JSONParseError, ExtractQualityError, PydanticValidationError) as e:
                 repair_errors = _extract_validation_errors(e)
                 logger.warning(
-                    "修复解析失败 paper_id=%s (第%d次): %s",
-                    paper_id, repair_attempt, "; ".join(repair_errors[:3])
+                    "首次解析失败 paper_id=%s: %s", paper_id, "; ".join(repair_errors[:3])
                 )
 
-        # ── 失败处理（修复循环耗尽：JSON 始终不可解析/完全空）──
-        # ADR(可靠性): 回退 pending 可直接重提，不再锁死 EXTRACT_FAILED
-        if parse_result is None:
-            db_fail2 = SessionLocal()
-            try:
-                p = db_fail2.query(Paper).filter(Paper.id == paper_id).first()
-                if p:
-                    p.status = PaperStatus.PENDING.value
-                    p.last_error = (
-                        f"解析失败（可重提）: " + "; ".join(repair_errors[:5])
-                    )[:500]
-                    db_fail2.commit()
-            finally:
-                db_fail2.close()
+            # 修复循环
+            repair_attempt = 0
+            while parse_result is None and repair_attempt < _MAX_REPAIR_ATTEMPTS:
+                repair_attempt += 1
+                if await request.is_disconnected():
+                    _rollback_extracting(paper_id)
+                    yield _sse_msg({"type": "cancelled", "message": "客户端已断开"})
+                    yield _sse_msg({"type": "done"})
+                    return
 
-            yield _sse_msg({
-                "type": "error",
-                "code": "EXTRACT_PARSE_FAILED",
-                "message": f"AI 返回无法解析（已重试{_MAX_REPAIR_ATTEMPTS}次），可重新提取: {'; '.join(repair_errors[:3])}",
-                "attempt": attempts,
-            })
-            yield _sse_msg({"type": "done"})
-            return
+                yield _sse_msg({
+                    "type": "repair",
+                    "attempt": repair_attempt,
+                    "max_repairs": _MAX_REPAIR_ATTEMPTS,
+                    "errors": repair_errors[:5],
+                })
 
-        # ── 保存结果（同一事务：状态 + extracted_data + 元数据 → 一次 commit）──
-        extracted = parse_result.data
-        db_save = SessionLocal()
-        try:
-            p = db_save.query(Paper).filter(Paper.id == paper_id).first()
-            if not p:
-                yield _sse_msg({"type": "error", "code": "NOT_FOUND", "message": "文献已不存在"})
+                repair_prompt = build_repair_prompt(full_text, repair_errors)
+                try:
+                    completion = await client._client.chat.completions.create(
+                        model=client._model,
+                        messages=[{"role": "user", "content": repair_prompt}],
+                        temperature=DEFAULT_TEMPERATURE,
+                        max_tokens=_EXTRACT_MAX_TOKENS,
+                        response_format={"type": "json_object"},
+                    )
+                    repair_response = completion.choices[0].message.content or ""
+                except Exception as repair_exc:
+                    logger.warning("修复调用失败 paper_id=%s: %s", paper_id, repair_exc)
+                    repair_errors = [f"修复 API 调用失败: {repair_exc}"]
+                    continue
+
+                try:
+                    parse_result = parse_and_validate(repair_response)
+                except (JSONParseError, ExtractQualityError, PydanticValidationError) as e:
+                    repair_errors = _extract_validation_errors(e)
+                    logger.warning(
+                        "修复解析失败 paper_id=%s (第%d次): %s",
+                        paper_id, repair_attempt, "; ".join(repair_errors[:3])
+                    )
+
+            # ── 失败处理（修复循环耗尽：JSON 始终不可解析/完全空）──
+            if parse_result is None:
+                db_fail2 = SessionLocal()
+                try:
+                    p = db_fail2.query(Paper).filter(Paper.id == paper_id).first()
+                    if p:
+                        p.status = PaperStatus.PENDING.value
+                        p.last_error = (
+                            f"解析失败（可重提）: " + "; ".join(repair_errors[:5])
+                        )[:500]
+                        db_fail2.commit()
+                finally:
+                    db_fail2.close()
+
+                yield _sse_msg({
+                    "type": "error",
+                    "code": "EXTRACT_PARSE_FAILED",
+                    "message": f"AI 返回无法解析（已重试{_MAX_REPAIR_ATTEMPTS}次），可重新提取: {'; '.join(repair_errors[:3])}",
+                    "attempt": attempts,
+                })
                 yield _sse_msg({"type": "done"})
                 return
 
-            p.status = PaperStatus.COMPLETED.value
-            p.extracted_at = datetime.utcnow()
-            # ADR(可靠性): 部分成功也入库为 COMPLETED；缺失字段记在 last_error 作可读标记
-            if parse_result.partial:
-                p.last_error = "部分成功：缺失字段 " + ", ".join(parse_result.missing_fields)
-            else:
-                p.last_error = None
+            # ── 保存结果（同一事务：状态 + extracted_data + 元数据 → 一次 commit）──
+            extracted = parse_result.data
+            db_save = SessionLocal()
+            try:
+                p = db_save.query(Paper).filter(Paper.id == paper_id).first()
+                if not p:
+                    yield _sse_msg({"type": "error", "code": "NOT_FOUND", "message": "文献已不存在"})
+                    yield _sse_msg({"type": "done"})
+                    return
 
-            if extracted.get("title") and not p.title:
-                p.title = extracted["title"]
-            if extracted.get("authors") and not p.authors:
-                p.authors = extracted["authors"]
-            if extracted.get("year") and not p.year:
-                p.year = extracted["year"]
-            if extracted.get("journal") and not p.journal:
-                p.journal = extracted["journal"]
+                p.status = PaperStatus.COMPLETED.value
+                p.extracted_at = datetime.utcnow()
+                if parse_result.partial:
+                    p.last_error = "部分成功：缺失字段 " + ", ".join(parse_result.missing_fields)
+                else:
+                    p.last_error = None
 
-            _save_extracted_data(db_save, paper_id, parse_result)
-            db_save.commit()
+                if extracted.get("title") and not p.title:
+                    p.title = extracted["title"]
+                if extracted.get("authors") and not p.authors:
+                    p.authors = extracted["authors"]
+                if extracted.get("year") and not p.year:
+                    p.year = extracted["year"]
+                if extracted.get("journal") and not p.journal:
+                    p.journal = extracted["journal"]
+
+                _save_extracted_data(db_save, paper_id, parse_result)
+                db_save.commit()
+            finally:
+                db_save.close()
+
+            yield _sse_msg({
+                "type": "result",
+                "paper_id": paper_id,
+                "title": extracted.get("title", ""),
+                "keywords": extracted.get("keywords", []),
+                "partial": parse_result.partial,
+                "missing_fields": parse_result.missing_fields,
+            })
+            yield _sse_msg({"type": "done"})
+        except asyncio.CancelledError:
+            _rollback_extracting(paper_id)
+            raise
+        except Exception as exc:
+            logger.exception("单篇摘要提取未预期异常 paper_id=%s", paper_id)
+            _rollback_extracting(paper_id)
+            yield _sse_msg({
+                "type": "error",
+                "code": "EXTRACT_UNEXPECTED",
+                "message": f"提取异常: {str(exc)[:200]}",
+            })
+            yield _sse_msg({"type": "done"})
         finally:
-            db_save.close()
-
-        yield _sse_msg({
-            "type": "result",
-            "paper_id": paper_id,
-            "title": extracted.get("title", ""),
-            "keywords": extracted.get("keywords", []),
-            "partial": parse_result.partial,
-            "missing_fields": parse_result.missing_fields,
-        })
-        yield _sse_msg({"type": "done"})
+            # 兜底：若仍以 extracting 收尾则回退（断连/生成器被丢弃等）
+            _rollback_extracting(paper_id)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
