@@ -121,8 +121,63 @@ function jobProgressText(job: JobStatusResponse | null, fallback: string) {
 export default function Adjudication() {
   const [searchParams, setSearchParams] = useSearchParams()
   const projectId = searchParams.get("project_id") ?? ""
-
   const [projects, setProjects] = useState<Project[]>([])
+
+  const setProjectId = useCallback(
+    (id: string) => {
+      if (id) {
+        localStorage.setItem(LAST_PROJECT_KEY, id)
+        setSearchParams({ project_id: id })
+      } else {
+        setSearchParams({})
+      }
+    },
+    [setSearchParams],
+  )
+
+  useEffect(() => {
+    apiGet<ProjectListResponse>("/projects/?page=1&page_size=100")
+      .then((res) => setProjects(res.items))
+      .catch(() => setProjects([]))
+  }, [])
+
+  useEffect(() => {
+    if (projects.length === 0) return
+    if (projectId && projects.some((p) => p.id === projectId)) return
+    const saved = localStorage.getItem(LAST_PROJECT_KEY)
+    const validSaved = saved && projects.some((p) => p.id === saved)
+    const fallback = projects.find((p) => p.is_default) ?? projects[0]
+    const id = validSaved ? saved! : fallback?.id
+    if (!id) return
+    const handle = window.setTimeout(() => setProjectId(id), 0)
+    return () => window.clearTimeout(handle)
+  }, [projects, projectId, setProjectId])
+
+  if (!projectId) {
+    return (
+      <div className="p-6 text-sm text-muted-foreground">加载项目…</div>
+    )
+  }
+
+  return (
+    <SignalsWorkbench
+      key={projectId}
+      projectId={projectId}
+      projects={projects}
+      onProjectChange={setProjectId}
+    />
+  )
+}
+
+function SignalsWorkbench({
+  projectId,
+  projects,
+  onProjectChange,
+}: {
+  projectId: string
+  projects: Project[]
+  onProjectChange: (id: string) => void
+}) {
   const [tab, setTab] = useState<MainTab>("pending")
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all")
   const [showWeak, setShowWeak] = useState(false)
@@ -150,39 +205,6 @@ export default function Adjudication() {
   const [weakConfirmOpen, setWeakConfirmOpen] = useState(false)
 
   const currentProject = projects.find((p) => p.id === projectId)
-
-  const setProjectId = useCallback(
-    (id: string) => {
-      if (id) {
-        localStorage.setItem(LAST_PROJECT_KEY, id)
-        setSearchParams({ project_id: id })
-      } else {
-        setSearchParams({})
-      }
-      setSelection(null)
-      setLastDiscover(null)
-      setJobError("")
-    },
-    [setSearchParams],
-  )
-
-  useEffect(() => {
-    apiGet<ProjectListResponse>("/projects/?page=1&page_size=100")
-      .then((res) => setProjects(res.items))
-      .catch(() => setProjects([]))
-  }, [])
-
-  useEffect(() => {
-    if (projects.length === 0) return
-    if (projectId && projects.some((p) => p.id === projectId)) return
-    const saved = localStorage.getItem(LAST_PROJECT_KEY)
-    const validSaved = saved && projects.some((p) => p.id === saved)
-    const fallback = projects.find((p) => p.is_default) ?? projects[0]
-    const id = validSaved ? saved! : fallback?.id
-    if (!id) return
-    const handle = window.setTimeout(() => setProjectId(id), 0)
-    return () => window.clearTimeout(handle)
-  }, [projects, projectId, setProjectId])
 
   const refreshLists = useCallback(async () => {
     if (!projectId) return
@@ -420,7 +442,7 @@ export default function Adjudication() {
           projectId={projectId}
           currentName={currentProject?.name}
           discovering={discovering}
-          onProjectChange={setProjectId}
+          onProjectChange={onProjectChange}
           onDiscover={handleDiscover}
         />
 
