@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom"
 import type { LucideIcon } from "lucide-react"
-import { BookOpen, PenLine, Settings, Sun, Moon, History, FolderKanban, Gavel } from "lucide-react"
+import { BookOpen, PenLine, Settings, Sun, Moon, History, FolderKanban, Sparkles } from "lucide-react"
 import { cn } from "../lib/utils"
 import { useDarkMode } from "../hooks/useDarkMode"
 
@@ -18,7 +18,7 @@ const NAV_ITEMS: NavItem[] = [
   { path: "/", label: "文献库", icon: BookOpen },
   { path: "/projects", label: "项目", icon: FolderKanban },
   { path: "/write", label: "论文撰写", icon: PenLine },
-  { path: "/adjudication", label: "裁决", icon: Gavel },
+  { path: "/adjudication", label: "机会 / Signals", icon: Sparkles },
   { path: "/history", label: "会话历史", icon: History },
   { path: "/settings", label: "设置", icon: Settings },
 ]
@@ -27,7 +27,8 @@ const PAGE_TITLES: Record<string, string> = {
   "/": "文献库",
   "/projects": "项目",
   "/write": "论文撰写",
-  "/adjudication": "裁决",
+  "/adjudication": "机会 / Signals",
+  "/signals": "机会 / Signals",
   "/history": "会话历史",
   "/settings": "设置",
 }
@@ -58,14 +59,16 @@ export default function Layout() {
               key={item.path}
               to={item.path}
               end={item.path === "/"}
-              className={({ isActive }) =>
-                cn(
+              className={({ isActive }) => {
+                const signalsActive =
+                  item.path === "/adjudication" && location.pathname === "/signals"
+                return cn(
                   "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                  isActive
+                  isActive || signalsActive
                     ? "bg-sidebar-accent text-sidebar-accent-foreground"
                     : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
                 )
-              }
+              }}
             >
               <item.icon className="h-4 w-4" />
               {item.label}
