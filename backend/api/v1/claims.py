@@ -989,14 +989,20 @@ async def cluster_limitations(
         )
 
     # Step5: 聚类完成后自动落库（事务性写入 candidate_groups + candidate_group_claims）
+    # 有候选组时落库失败必须向调用方暴露，禁止再返回 HTTP 200。
     run_id = ""
     if result.get("groups"):
         try:
-            run_id = save_clustering_result(result)
+            run_id = save_clustering_result(result, project_id=project_id)
+            if not run_id:
+                raise RuntimeError("未获得 run_id")
             logger.info("聚类结果已落库: run_id=%s", run_id[:12])
         except Exception as exc:
-            logger.exception("落库失败（聚类结果仍返回）: %s", exc)
-            # 落库失败不阻塞 API 响应，但 run_id 留空提示
+            logger.exception("聚类落库失败: project_id=%s", project_id)
+            raise HTTPException(
+                status_code=500,
+                detail=f"聚类结果落库失败: {str(exc)[:300]}",
+            ) from exc
     result["run_id"] = run_id
 
     return LimitationClusterResponse(**result)

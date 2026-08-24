@@ -28,11 +28,13 @@ def _uuid4() -> str:
 
 def save_clustering_result(
     result: dict[str, Any],
+    project_id: str | None = None,
 ) -> str:
     """将聚类结果字典写入 candidate_groups + candidate_group_claims。
 
     参数:
         result: run_clustering() 返回的 dict，结构见 limitation_clusterer.py。
+        project_id: 项目 ID（优先于 result["project_id"]，必须有值才能落库）。
 
     返回:
         run_id: 本次聚类运行的批次 ID（UUID 字符串）。
@@ -41,6 +43,7 @@ def save_clustering_result(
         - result["groups"] 必须非空。
         - 每条 group 含 candidate_group_id(int) + evidence(list[dict])。
         - 每个 evidence 含 claim_id(str)。
+        - project_id 必须可解析（参数或 result["project_id"]）。
 
     事务行为:
         如果中途失败，整个 run 的全部写入回滚，不产生半截数据。
@@ -50,8 +53,15 @@ def save_clustering_result(
         logger.warning("save_clustering_result: 无候选组可写入，跳过")
         return ""
 
+    pid = project_id or result.get("project_id") or ""
+    if not pid:
+        raise ValueError("save_clustering_result 需要 project_id")
+
     run_id = _uuid4()
-    logger.info("开始落库: run_id=%s, 候选组数=%d", run_id[:12], len(groups))
+    logger.info(
+        "开始落库: run_id=%s, project_id=%s, 候选组数=%d",
+        run_id[:12], str(pid)[:12], len(groups),
+    )
 
     db: Session = SessionLocal()
     try:
@@ -61,6 +71,7 @@ def save_clustering_result(
                 # ── 写入 candidate_groups ──
                 cg = CandidateGroup(
                     id=_uuid4(),
+                    project_id=pid,
                     run_id=run_id,
                     group_label=g["group_label"],
                     topic=g["topic"],

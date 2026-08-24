@@ -38,11 +38,43 @@ def _now_utc() -> str:
 # ── 查询：获取候选组列表（含裁决状态） ──
 
 
+def _matches_project(stored_project_id: Optional[str], project_id: Optional[str]) -> bool:
+    """project_id 未指定则不过滤；指定则必须与存储值一致。"""
+    if project_id is None:
+        return True
+    return stored_project_id == project_id
+
+
+def get_candidate_group_for_project(
+    db: Session,
+    candidate_group_id: str,
+    project_id: Optional[str] = None,
+) -> Optional[CandidateGroup]:
+    """按 id 取候选组；指定 project_id 时跨项目视为不存在。"""
+    cg = db.get(CandidateGroup, candidate_group_id)
+    if not cg or not _matches_project(cg.project_id, project_id):
+        return None
+    return cg
+
+
+def get_signal_for_project(
+    db: Session,
+    signal_id: str,
+    project_id: Optional[str] = None,
+) -> Optional[Signal]:
+    """按 id 取信号；指定 project_id 时跨项目视为不存在。"""
+    sig = db.get(Signal, signal_id)
+    if not sig or not _matches_project(sig.project_id, project_id):
+        return None
+    return sig
+
+
 def list_candidate_groups(
     db: Session,
+    project_id: str,
     run_id: Optional[str] = None,
 ) -> list[dict]:
-    """列出候选组，附带裁决状态（已裁决则显示 signal_id/signal_name/status）."""
+    """列出指定项目的候选组，附带裁决状态（已裁决则显示 signal_id/signal_name/status）."""
     # 子查询：每个 candidate_group 关联的 signal
     signal_sub = (
         select(
@@ -63,6 +95,7 @@ def list_candidate_groups(
             signal_sub.c.status.label("adjudication_status"),
         )
         .outerjoin(signal_sub, CandidateGroup.id == signal_sub.c.candidate_group_id)
+        .where(CandidateGroup.project_id == project_id)
         .order_by(CandidateGroup.created_at.desc())
     )
 
@@ -73,6 +106,7 @@ def list_candidate_groups(
     return [
         {
             "id": cg.id,
+            "project_id": cg.project_id,
             "run_id": cg.run_id,
             "group_label": cg.group_label,
             "topic": cg.topic,
@@ -147,9 +181,10 @@ def accept_group(
     candidate_group_id: str,
     signal_name: str,
     human_rationale: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Signal:
     """采纳整个候选组为确认信号."""
-    cg = db.get(CandidateGroup, candidate_group_id)
+    cg = get_candidate_group_for_project(db, candidate_group_id, project_id)
     if not cg:
         raise ValueError("候选组不存在")
 
@@ -162,6 +197,7 @@ def accept_group(
 
     sig = Signal(
         id=_uuid4(),
+        project_id=cg.project_id or project_id,
         signal_name=signal_name,
         status=SignalStatus.ACCEPTED.value,
         topic=cg.topic,
@@ -199,9 +235,10 @@ def reject_group(
     db: Session,
     candidate_group_id: str,
     human_rationale: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Signal:
     """否决候选组（不采纳）."""
-    cg = db.get(CandidateGroup, candidate_group_id)
+    cg = get_candidate_group_for_project(db, candidate_group_id, project_id)
     if not cg:
         raise ValueError("候选组不存在")
 
@@ -213,6 +250,7 @@ def reject_group(
 
     sig = Signal(
         id=_uuid4(),
+        project_id=cg.project_id or project_id,
         signal_name=None,  # 否决的信号不用命名
         status=SignalStatus.REJECTED.value,
         topic=cg.topic,
@@ -234,9 +272,10 @@ def kick_claim(
     db: Session,
     signal_id: str,
     claim_id: str,
+    project_id: Optional[str] = None,
 ) -> SignalClaim:
     """从信号中移除一条 claim（标记为 manual_remove）."""
-    sig = db.get(Signal, signal_id)
+    sig = get_signal_for_project(db, signal_id, project_id)
     if not sig:
         raise ValueError("信号不存在")
 
@@ -287,13 +326,14 @@ def update_signal(
     signal_name: Optional[str] = None,
     status: Optional[SignalStatus] = None,
     human_rationale: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Signal:
     """修改信号（改名/改状态/改备注）.
 
     F-04 fix: 当 status 从 rejected/pending 变为 accepted、且信号当前无 signal_claims
     桥接行时，从 candidate_group_claims 重新导入全部 claim 到 signal_claims。
     """
-    sig = db.get(Signal, signal_id)
+    sig = get_signal_for_project(db, signal_id, project_id)
     if not sig:
         raise ValueError("信号不存在")
 
@@ -362,10 +402,11 @@ def update_signal(
 
 def list_signals(
     db: Session,
+    project_id: str,
     status_filter: Optional[str] = None,
 ) -> list[Signal]:
-    """列出所有信号，可选按状态过滤."""
-    q = db.query(Signal)
+    """列出指定项目的信号，可选按状态过滤."""
+    q = db.query(Signal).filter(Signal.project_id == project_id)
     if status_filter:
         q = q.filter(Signal.status == status_filter)
     return q.order_by(Signal.updated_at.desc()).all()
@@ -374,9 +415,13 @@ def list_signals(
 # ── 查询：获取信号详情（含 claims） ──
 
 
-def get_signal_detail(db: Session, signal_id: str) -> Optional[dict]:
-    """获取信号详情，含 claims."""
-    sig = db.get(Signal, signal_id)
+def get_signal_detail(
+    db: Session,
+    signal_id: str,
+    project_id: Optional[str] = None,
+) -> Optional[dict]:
+    """获取信号详情，含 claims。指定 project_id 时跨项目返回 None。"""
+    sig = get_signal_for_project(db, signal_id, project_id)
     if not sig:
         return None
 
@@ -423,6 +468,7 @@ def get_signal_detail(db: Session, signal_id: str) -> Optional[dict]:
 
     return {
         "id": sig.id,
+        "project_id": sig.project_id,
         "signal_name": sig.signal_name,
         "status": sig.status,
         "topic": sig.topic,
@@ -445,4 +491,6 @@ __all__ = [
     "get_signal_detail",
     "list_candidate_groups",
     "get_candidate_group_claims",
+    "get_candidate_group_for_project",
+    "get_signal_for_project",
 ]

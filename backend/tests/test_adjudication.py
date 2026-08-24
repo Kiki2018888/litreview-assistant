@@ -10,6 +10,9 @@
 """
 from __future__ import annotations
 
+# 本文件是手动集成脚本（`python backend/tests/test_adjudication.py`），不是 pytest 用例。
+__test__ = False
+
 import json
 import os
 import sys
@@ -22,7 +25,6 @@ from threading import Thread
 # 确保项目根在 sys.path 中
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # tests/ → backend/ → root
 sys.path.insert(0, str(PROJECT_ROOT))
-os.chdir(str(PROJECT_ROOT))  # backend.config 依赖相对路径 data/
 
 from backend.config import settings
 from backend.services.db import SessionLocal
@@ -42,6 +44,7 @@ ADJ = f"{BASE_URL}/api/v1/adjudication"
 
 # ── 测试用 UUID ──
 TEST_RUN_ID = str(uuid.uuid4())
+TEST_PROJECT_ID = ""
 
 
 def _uuid() -> str:
@@ -50,7 +53,8 @@ def _uuid() -> str:
 
 def _req(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
     """简易 HTTP 请求."""
-    url = f"{ADJ}{path}"
+    sep = "&" if "?" in path else "?"
+    url = f"{ADJ}{path}{sep}project_id={TEST_PROJECT_ID}"
     data = json.dumps(body).encode("utf-8") if body else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
@@ -72,9 +76,17 @@ def seed_candidate_groups():
             print("[ERROR] DB 中 is_limitation=true 的 claims 不足 4 条，跑过 _run_clustering.py 了吗？")
             sys.exit(1)
 
+        paper = db.get(Paper, claims[0].paper_id)
+        global TEST_PROJECT_ID
+        TEST_PROJECT_ID = (paper.project_id if paper else None) or ""
+        if not TEST_PROJECT_ID:
+            print("[ERROR] 种子 claims 所属文献没有 project_id")
+            sys.exit(1)
+
         # 候选组 1：取前 3 条（将被采纳）
         cg1 = CandidateGroup(
             id=_uuid(), run_id=TEST_RUN_ID,
+            project_id=TEST_PROJECT_ID,
             group_label="测试候选组-A: 涉及实验方法局限性",
             topic="manufacturing",
             grouping_method="topic + LLM 辅助分组",
@@ -91,6 +103,7 @@ def seed_candidate_groups():
         # 候选组 2：取后 3 条（将被否决）
         cg2 = CandidateGroup(
             id=_uuid(), run_id=TEST_RUN_ID,
+            project_id=TEST_PROJECT_ID,
             group_label="测试候选组-B: 涉及数据解释不确定性",
             topic="other",
             grouping_method="topic + LLM 辅助分组",
@@ -107,6 +120,7 @@ def seed_candidate_groups():
         # 候选组 3：取 1 条孤例（待定，不做裁决）
         cg3 = CandidateGroup(
             id=_uuid(), run_id=TEST_RUN_ID,
+            project_id=TEST_PROJECT_ID,
             group_label="测试候选组-C: 孤例",
             topic="mechanism",
             grouping_method="topic only",
@@ -359,6 +373,8 @@ def start_server():
 # ── 主流程 ──
 
 if __name__ == "__main__":
+    os.chdir(str(PROJECT_ROOT))  # backend.config 依赖相对路径 data/
+
     print("裁决数据模型集成测试（ADR-7）")
     print(f"服务地址: {BASE_URL}")
     print(f"测试 run_id: {TEST_RUN_ID}")

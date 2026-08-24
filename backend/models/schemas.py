@@ -552,6 +552,7 @@ class SignalResponse(_ORMModel):
     """信号响应."""
 
     id: str
+    project_id: Optional[str] = None
     signal_name: Optional[str] = None
     status: str
     topic: Optional[str] = None
@@ -573,6 +574,7 @@ class CandidateGroupResponse(_ORMModel):
     """候选组响应（含裁决状态）."""
 
     id: str
+    project_id: Optional[str] = None
     run_id: str
     group_label: str
     topic: str
