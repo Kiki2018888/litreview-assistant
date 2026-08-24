@@ -489,9 +489,15 @@ class CandidateGroup(Base):
     __table_args__ = (
         Index("ix_candidate_groups_run_id", "run_id"),
         Index("ix_candidate_groups_topic", "topic"),
+        Index("ix_candidate_groups_project_id", "project_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid4)
+    project_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     run_id: Mapped[str] = mapped_column(String(36), nullable=False)
     group_label: Mapped[str] = mapped_column(String(200), nullable=False)
     topic: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -551,9 +557,15 @@ class Signal(Base):
         Index("ix_signals_status", "status"),
         Index("ix_signals_topic", "topic"),
         Index("ix_signals_cgroup_id", "candidate_group_id"),
+        Index("ix_signals_project_id", "project_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid4)
+    project_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     signal_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=SignalStatus.PENDING.value,

@@ -71,9 +71,13 @@ def _run_migrations() -> None:
         return
 
     alembic_cfg = Config(str(ini_path))
+    # script_location in alembic.ini is cwd-relative; pin it to the ini directory
+    # so pytest from repo root (and Electron CWD) still finds backend/alembic.
     if getattr(sys, "frozen", False):
-        alembic_scripts = Path(sys._MEIPASS) / "alembic"
-        alembic_cfg.set_main_option("script_location", str(alembic_scripts))
+        alembic_scripts = Path(sys._MEIPASS) / "alembic"  # type: ignore[attr-defined]
+    else:
+        alembic_scripts = ini_path.parent / "alembic"
+    alembic_cfg.set_main_option("script_location", str(alembic_scripts))
 
     command.upgrade(alembic_cfg, "head")
     logger.info("数据库迁移完成（Alembic upgrade head）")
