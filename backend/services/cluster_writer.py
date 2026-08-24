@@ -11,13 +11,17 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from backend.models.tables import CandidateGroup, CandidateGroupClaim
-from backend.services.db import SessionLocal
+from backend.models.tables import CandidateGroup, CandidateGroupClaim, CandidateType
+from backend.services.candidate_util import (
+    evidence_paper_ids,
+    has_quote_evidence,
+    one_liner,
+)
+from backend.services import db as db_mod
 
 logger = logging.getLogger(__name__)
 
@@ -63,27 +67,50 @@ def save_clustering_result(
         run_id[:12], str(pid)[:12], len(groups),
     )
 
-    db: Session = SessionLocal()
+    db: Session = db_mod.SessionLocal()
     try:
         # 事务包裹：with db.begin() 会在退出时 commit 或 rollback
         with db.begin():
             for g in groups:
+                evidence = g.get("evidence", [])
+                candidate_type = (
+                    g.get("candidate_type")
+                    or CandidateType.LIMITATION_CLUSTER.value
+                )
+                paper_ids = evidence_paper_ids(evidence)
+                paper_count = int(g.get("paper_count") or len(paper_ids) or 0)
+                if "is_weak" in g:
+                    is_weak = bool(g.get("is_weak"))
+                elif candidate_type == CandidateType.CONTRADICTION.value:
+                    is_weak = any(
+                        not has_quote_evidence(ev.get("quote"), ev.get("page"))
+                        for ev in evidence
+                    )
+                else:
+                    is_weak = paper_count < 2
+                statement = one_liner(g.get("statement") or g.get("group_label"))
+                label = statement or one_liner(g["group_label"])
+                method = (g.get("grouping_method") or "")[:50]
+
                 # ── 写入 candidate_groups ──
                 cg = CandidateGroup(
                     id=_uuid4(),
                     project_id=pid,
                     run_id=run_id,
-                    group_label=g["group_label"],
+                    candidate_type=candidate_type,
+                    group_label=label[:200],
+                    statement=(statement or None) and statement[:200],
                     topic=g["topic"],
-                    grouping_method=g["grouping_method"],
+                    grouping_method=method,
                     grouping_basis=g.get("grouping_basis", ""),
                     cross_paper=g.get("cross_paper", False),
-                    claim_count=g.get("claim_count", len(g.get("evidence", []))),
+                    claim_count=g.get("claim_count", len(evidence)),
+                    paper_count=paper_count,
+                    is_weak=is_weak,
                 )
                 db.add(cg)
                 db.flush()  # 确保 cg.id 可用
 
-                # ── 写入 candidate_group_claims ──
                 evidence = g.get("evidence", [])
                 for order_idx, ev in enumerate(evidence):
                     cgc = CandidateGroupClaim(

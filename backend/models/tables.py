@@ -129,11 +129,18 @@ class ClaimAddition(str, Enum):
     MANUAL_REMOVE = "manual_remove"            # 手动踢出（留痕，不删行）
 
 
+class CandidateType(str, Enum):
+    """候选组类型（S1：局限聚类 / 规则矛盾）."""
+    LIMITATION_CLUSTER = "limitation_cluster"
+    CONTRADICTION = "contradiction"
+
+
 class JobType(str, Enum):
     """任务类型."""
     SUMMARY_EXTRACT = "summary_extract"
     CLAIMS_EXTRACT = "claims_extract"
     LIMITATION_CLUSTER = "limitation_cluster"
+    DISCOVER = "discover"
 
 
 class JobStatus(str, Enum):
@@ -487,9 +494,15 @@ class CandidateGroup(Base):
 
     __tablename__ = "candidate_groups"
     __table_args__ = (
+        CheckConstraint(
+            "candidate_type IN ('limitation_cluster', 'contradiction')",
+            name="ck_candidate_groups_type",
+        ),
         Index("ix_candidate_groups_run_id", "run_id"),
         Index("ix_candidate_groups_topic", "topic"),
         Index("ix_candidate_groups_project_id", "project_id"),
+        Index("ix_candidate_groups_type", "candidate_type"),
+        Index("ix_candidate_groups_is_weak", "is_weak"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid4)
@@ -499,12 +512,20 @@ class CandidateGroup(Base):
         nullable=True,
     )
     run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    candidate_type: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default=CandidateType.LIMITATION_CLUSTER.value,
+    )
     group_label: Mapped[str] = mapped_column(String(200), nullable=False)
+    statement: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     topic: Mapped[str] = mapped_column(String(20), nullable=False)
     grouping_method: Mapped[str] = mapped_column(String(50), nullable=False)
     grouping_basis: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     cross_paper: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     claim_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    paper_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_weak: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -633,7 +654,7 @@ class ExtractJob(Base):
     __tablename__ = "extract_jobs"
     __table_args__ = (
         CheckConstraint(
-            "job_type IN ('summary_extract', 'claims_extract', 'limitation_cluster')",
+            "job_type IN ('summary_extract', 'claims_extract', 'limitation_cluster', 'discover')",
             name="ck_extract_jobs_job_type",
         ),
         CheckConstraint(
@@ -701,6 +722,7 @@ __all__ = [
     "ExtractionSource",
     "SignalStatus",
     "ClaimAddition",
+    "CandidateType",
     "JobType",
     "JobStatus",
 ]

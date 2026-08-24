@@ -27,8 +27,8 @@ from backend.services.adjudication_service import (
     list_signals,
     get_signal_detail,
     list_candidate_groups,
-    get_candidate_group_claims,
     get_candidate_group_for_project,
+    serialize_candidate_group_detail,
 )
 from backend.services.db import SessionLocal
 
@@ -44,11 +44,29 @@ router = APIRouter(prefix="/api/v1/adjudication", tags=["adjudication"])
 def get_candidate_groups(
     project_id: str = Query(..., description="项目 ID"),
     run_id: str | None = Query(None),
+    type: str | None = Query(
+        None,
+        pattern="^(limitation_cluster|contradiction)$",
+        description="候选类型",
+    ),
+    status: str | None = Query(
+        None,
+        pattern="^(pending|accepted|rejected)$",
+        description="裁决状态",
+    ),
+    is_weak: bool | None = Query(None, description="弱候选过滤；false 仅返回可主路径采纳的"),
 ):
-    """列出指定项目的候选组，附带裁决状态."""
+    """列出指定项目的候选组，附带裁决状态. 可按 type / status / is_weak 过滤."""
     db = SessionLocal()
     try:
-        groups = list_candidate_groups(db, project_id=project_id, run_id=run_id)
+        groups = list_candidate_groups(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+            candidate_type=type,
+            status_filter=status,
+            is_weak=is_weak,
+        )
         return groups
     finally:
         db.close()
@@ -66,20 +84,7 @@ def get_candidate_group(
         if not cg:
             raise HTTPException(status_code=404, detail="候选组不存在")
 
-        claims = get_candidate_group_claims(db, candidate_group_id)
-        return {
-            "id": cg.id,
-            "project_id": cg.project_id,
-            "run_id": cg.run_id,
-            "group_label": cg.group_label,
-            "topic": cg.topic,
-            "grouping_method": cg.grouping_method,
-            "grouping_basis": cg.grouping_basis,
-            "cross_paper": cg.cross_paper,
-            "claim_count": cg.claim_count,
-            "created_at": cg.created_at.isoformat() if cg.created_at else None,
-            "claims": claims,
-        }
+        return serialize_candidate_group_detail(db, cg)
     finally:
         db.close()
 
