@@ -503,6 +503,7 @@ class CandidateGroup(Base):
         Index("ix_candidate_groups_project_id", "project_id"),
         Index("ix_candidate_groups_type", "candidate_type"),
         Index("ix_candidate_groups_is_weak", "is_weak"),
+        Index("ix_candidate_groups_fingerprint", "fingerprint"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid4)
@@ -526,6 +527,10 @@ class CandidateGroup(Base):
     claim_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     paper_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_weak: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    previously_rejected: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -579,6 +584,8 @@ class Signal(Base):
         Index("ix_signals_topic", "topic"),
         Index("ix_signals_cgroup_id", "candidate_group_id"),
         Index("ix_signals_project_id", "project_id"),
+        Index("ix_signals_type", "candidate_type"),
+        Index("ix_signals_fingerprint", "fingerprint"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid4)
@@ -591,6 +598,8 @@ class Signal(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=SignalStatus.PENDING.value,
     )
+    candidate_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    statement: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     topic: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     candidate_group_id: Mapped[Optional[str]] = mapped_column(
         String(36),
@@ -598,6 +607,8 @@ class Signal(Base):
         nullable=True,
     )
     human_rationale: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    evidence_snapshot: Mapped[Optional[list[Any]]] = mapped_column(JSON, nullable=True)
+    fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     claim_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
@@ -606,6 +617,11 @@ class Signal(Base):
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
     adjudicated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    @property
+    def type(self) -> Optional[str]:
+        """Alias of candidate_type for list/detail payloads."""
+        return self.candidate_type
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
+from collections.abc import Iterable
 
 _WS_RE = re.compile(r"\s+")
 _PUNCT_RE = re.compile(r"[^\w\s]+", flags=re.UNICODE)
@@ -44,9 +46,22 @@ def evidence_paper_ids(evidence: list[dict]) -> set[str]:
     return {str(ev.get("paper_id") or "") for ev in evidence if ev.get("paper_id")}
 
 
+def candidate_fingerprint(candidate_type: str, claim_ids: Iterable[str]) -> str:
+    """Stable identity for a candidate across discover/clustering re-runs.
+
+    Same project-level type + claim set → same fingerprint, independent of
+    run_id / group_label wording. Used to mark previously_rejected groups
+    without mutating existing Signals (ADR-7).
+    """
+    ids = ",".join(sorted({str(cid).strip() for cid in claim_ids if cid}))
+    payload = f"{(candidate_type or '').strip()}|{ids}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 __all__ = [
     "one_liner",
     "has_quote_evidence",
     "normalize_subject",
     "evidence_paper_ids",
+    "candidate_fingerprint",
 ]
