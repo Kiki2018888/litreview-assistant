@@ -137,3 +137,7 @@ ResearchAssistant_SPEC_v1_3_0.md
 开发进度规划.md
 开发进度规划2.0.md
 开发进度规划2.1.md
+
+# Local Electron/PyInstaller output folders
+release125/
+
