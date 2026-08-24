@@ -522,6 +522,7 @@ class AdjudicateRequest(_ORMModel):
     candidate_group_id: str
     signal_name: Optional[str] = Field(default=None, max_length=200)
     human_rationale: Optional[str] = None
+    accept_weak: bool = False
 
 
 class SignalUpdateRequest(_ORMModel):
@@ -555,6 +556,9 @@ class SignalResponse(_ORMModel):
     project_id: Optional[str] = None
     signal_name: Optional[str] = None
     status: str
+    type: Optional[str] = None
+    candidate_type: Optional[str] = None
+    statement: Optional[str] = None
     topic: Optional[str] = None
     candidate_group_id: Optional[str] = None
     human_rationale: Optional[str] = None
@@ -564,10 +568,24 @@ class SignalResponse(_ORMModel):
     adjudicated_at: Optional[datetime] = None
 
 
+class SignalEvidenceItem(_ORMModel):
+    """信号证据快照中的一条 claim（quote+page 在采纳时固化）."""
+
+    claim_id: str
+    paper_id: Optional[str] = None
+    paper_title: Optional[str] = None
+    quote: Optional[str] = None
+    page: Optional[int] = None
+    quote_page: Optional[int] = None
+    subject: Optional[str] = None
+    topic: Optional[str] = None
+
+
 class SignalDetailResponse(SignalResponse):
-    """信号详情（含 claims 列表）."""
+    """信号详情（含 claims 列表 + 证据快照）."""
 
     claims: list[SignalClaimResponse] = Field(default_factory=list)
+    evidence: list[SignalEvidenceItem] = Field(default_factory=list)
 
 
 class CandidateGroupResponse(_ORMModel):
@@ -587,6 +605,7 @@ class CandidateGroupResponse(_ORMModel):
     claim_count: int
     paper_count: int = 0
     is_weak: bool = False
+    previously_rejected: bool = False
     created_at: datetime
     # 关联的裁决状态（直接查询 signals 表计算）
     adjudication_status: Optional[str] = None  # null=pending, 或 accepted/rejected
@@ -670,6 +689,7 @@ __all__ = [
     "AdjudicateRequest",
     "SignalUpdateRequest",
     "SignalClaimResponse",
+    "SignalEvidenceItem",
     "SignalResponse",
     "SignalDetailResponse",
     "CandidateGroupResponse",

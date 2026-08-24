@@ -1,10 +1,10 @@
 """裁决 API（ADR-7：AI召回候选组 → 人裁决信号）.
 
 端点（均需 project_id 查询参数，按项目隔离）:
-  GET    /candidate-groups        — 列出候选组（含裁决状态）
+  GET    /candidate-groups        — 列出候选组（含裁决状态 / previously_rejected）
   GET    /candidate-groups/{id}   — 候选组详情（含 claims）
-  GET    /signals                 — 列出项目内裁决信号
-  GET    /signals/{id}            — 信号详情
+  GET    /signals                 — 列出项目内裁决信号（可按 type/status）
+  GET    /signals/{id}            — 信号详情（含 evidence 快照）
   POST   /signals                 — 创建裁决（accept/reject）
   PATCH  /signals/{id}            — 修改裁决（改名/改状态/改备注）
   DELETE /signals/{signal_id}/claims/{claim_id}  — 从信号中踢出 claim
@@ -29,6 +29,7 @@ from backend.services.adjudication_service import (
     list_candidate_groups,
     get_candidate_group_for_project,
     serialize_candidate_group_detail,
+    WEAK_ACCEPT_MSG,
 )
 from backend.services.db import SessionLocal
 
@@ -55,6 +56,9 @@ def get_candidate_groups(
         description="裁决状态",
     ),
     is_weak: bool | None = Query(None, description="弱候选过滤；false 仅返回可主路径采纳的"),
+    previously_rejected: bool | None = Query(
+        None, description="是否曾在先前 run 被否决（同 fingerprint）",
+    ),
 ):
     """列出指定项目的候选组，附带裁决状态. 可按 type / status / is_weak 过滤."""
     db = SessionLocal()
@@ -66,6 +70,7 @@ def get_candidate_groups(
             candidate_type=type,
             status_filter=status,
             is_weak=is_weak,
+            previously_rejected=previously_rejected,
         )
         return groups
     finally:
@@ -98,12 +103,22 @@ def get_candidate_group(
 def get_signals(
     project_id: str = Query(..., description="项目 ID"),
     status: str | None = Query(None, pattern="^(pending|accepted|rejected)$"),
+    type: str | None = Query(
+        None,
+        pattern="^(limitation_cluster|contradiction)$",
+        description="候选类型",
+    ),
 ):
-    """列出指定项目的信号."""
+    """列出指定项目的信号，可按 status / type 过滤."""
     db = SessionLocal()
     try:
-        sigs = list_signals(db, project_id=project_id, status_filter=status)
-        return sigs
+        sigs = list_signals(
+            db,
+            project_id=project_id,
+            status_filter=status,
+            candidate_type=type,
+        )
+        return [SignalResponse.model_validate(s) for s in sigs]
     finally:
         db.close()
 
@@ -136,20 +151,20 @@ def create_signal(
 ):
     """创建裁决：采纳（accept）或否决（reject）一个候选组.
 
-    采纳时 signal_name 必填；否决时 signal_name 留空。
+    采纳时 signal_name 可省略，默认用候选组 one-liner/statement。
+    弱候选（is_weak）采纳必须显式 accept_weak=true，否则 400。
     候选组必须属于 project_id，否则 404。
     """
     db = SessionLocal()
     try:
         if body.action == "accept":
-            if not body.signal_name:
-                raise HTTPException(status_code=400, detail="采纳时必须提供 signal_name")
             sig = accept_group(
                 db,
                 candidate_group_id=body.candidate_group_id,
                 signal_name=body.signal_name,
                 human_rationale=body.human_rationale,
                 project_id=project_id,
+                accept_weak=body.accept_weak,
             )
         elif body.action == "reject":
             sig = reject_group(
@@ -165,7 +180,12 @@ def create_signal(
     except ValueError as e:
         db.rollback()
         msg = str(e)
-        status_code = 409 if "已被裁决" in msg else 404
+        if msg == WEAK_ACCEPT_MSG or "弱候选" in msg:
+            status_code = 400
+        elif "已被裁决" in msg:
+            status_code = 409
+        else:
+            status_code = 404
         raise HTTPException(status_code=status_code, detail=msg)
     except Exception:
         db.rollback()

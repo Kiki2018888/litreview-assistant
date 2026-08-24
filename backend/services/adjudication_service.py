@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from backend.models.tables import (
     CandidateGroup,
     CandidateGroupClaim,
+    CandidateType,
     Claim,
     ClaimAddition,
     Paper,
@@ -22,6 +23,9 @@ from backend.models.tables import (
     SignalClaim,
     SignalStatus,
 )
+from backend.services.candidate_util import candidate_fingerprint, one_liner
+
+WEAK_ACCEPT_MSG = "弱候选不可走主采纳路径，请显式传入 accept_weak=true"
 
 # ── 内部辅助 ──
 
@@ -76,6 +80,7 @@ def list_candidate_groups(
     candidate_type: Optional[str] = None,
     status_filter: Optional[str] = None,
     is_weak: Optional[bool] = None,
+    previously_rejected: Optional[bool] = None,
 ) -> list[dict]:
     """列出指定项目的候选组，附带裁决状态（已裁决则显示 signal_id/signal_name/status）."""
     # 子查询：每个 candidate_group 关联的 signal
@@ -108,6 +113,8 @@ def list_candidate_groups(
         query = query.where(CandidateGroup.candidate_type == candidate_type)
     if is_weak is not None:
         query = query.where(CandidateGroup.is_weak == is_weak)
+    if previously_rejected is not None:
+        query = query.where(CandidateGroup.previously_rejected == previously_rejected)
     if status_filter == "pending":
         query = query.where(signal_sub.c.status.is_(None))
     elif status_filter:
@@ -130,6 +137,7 @@ def list_candidate_groups(
             "claim_count": cg.claim_count,
             "paper_count": cg.paper_count,
             "is_weak": bool(cg.is_weak),
+            "previously_rejected": bool(getattr(cg, "previously_rejected", False)),
             "is_solo": cg.claim_count == 1,
             "created_at": cg.created_at.isoformat() if cg.created_at else None,
             "adjudication_status": adj_status,
@@ -233,6 +241,7 @@ def serialize_candidate_group_detail(
         "claim_count": cg.claim_count,
         "paper_count": int(getattr(cg, "paper_count", 0) or 0),
         "is_weak": bool(getattr(cg, "is_weak", False)),
+        "previously_rejected": bool(getattr(cg, "previously_rejected", False)),
         "created_at": cg.created_at.isoformat() if cg.created_at else None,
         "papers": list(papers_map.values()),
         "evidence": evidence,
@@ -243,17 +252,90 @@ def serialize_candidate_group_detail(
 # ── A1: 采纳候选组 → 创建 signal（status=accepted） ──
 
 
+def _group_claim_ids(db: Session, candidate_group_id: str) -> list[str]:
+    rows = (
+        db.query(CandidateGroupClaim.claim_id)
+        .filter(CandidateGroupClaim.candidate_group_id == candidate_group_id)
+        .order_by(CandidateGroupClaim.claim_order)
+        .all()
+    )
+    return [row[0] for row in rows]
+
+
+def _build_evidence_snapshot(db: Session, candidate_group_id: str) -> list[dict]:
+    """Freeze quote+page (and paper) at adjudication time."""
+    snapshot = []
+    for claim in get_candidate_group_claims(db, candidate_group_id):
+        page = int(claim.get("quote_page") or claim.get("page") or 0)
+        snapshot.append({
+            "claim_id": claim["claim_id"],
+            "paper_id": claim.get("paper_id"),
+            "paper_title": claim.get("paper_title") or "Unknown",
+            "quote": claim.get("quote") or "",
+            "page": page,
+            "quote_page": page,
+            "subject": claim.get("subject"),
+            "topic": claim.get("topic"),
+        })
+    return snapshot
+
+
+def _signal_identity_from_group(db: Session, cg: CandidateGroup) -> tuple[str, str, str]:
+    """Return (candidate_type, statement, fingerprint) stamped onto a Signal."""
+    candidate_type = (
+        getattr(cg, "candidate_type", None) or CandidateType.LIMITATION_CLUSTER.value
+    )
+    statement = one_liner(getattr(cg, "statement", None) or cg.group_label)
+    fingerprint = getattr(cg, "fingerprint", None) or candidate_fingerprint(
+        candidate_type, _group_claim_ids(db, cg.id),
+    )
+    return candidate_type, statement, fingerprint
+
+
+def list_rejected_fingerprints(db: Session, project_id: str) -> set[str]:
+    """Fingerprints of rejected Signals in this project (for re-discover marking)."""
+    fps: set[str] = set()
+    rejected = (
+        db.query(Signal)
+        .filter(
+            Signal.project_id == project_id,
+            Signal.status == SignalStatus.REJECTED.value,
+        )
+        .all()
+    )
+    for sig in rejected:
+        if sig.fingerprint:
+            fps.add(sig.fingerprint)
+            continue
+        if not sig.candidate_group_id:
+            continue
+        cg = db.get(CandidateGroup, sig.candidate_group_id)
+        ctype = (
+            (cg.candidate_type if cg else None)
+            or CandidateType.LIMITATION_CLUSTER.value
+        )
+        fps.add(candidate_fingerprint(ctype, _group_claim_ids(db, sig.candidate_group_id)))
+    return fps
+
+
 def accept_group(
     db: Session,
     candidate_group_id: str,
-    signal_name: str,
+    signal_name: Optional[str] = None,
     human_rationale: Optional[str] = None,
     project_id: Optional[str] = None,
+    accept_weak: bool = False,
 ) -> Signal:
-    """采纳整个候选组为确认信号."""
+    """采纳整个候选组为确认信号.
+
+    弱候选（is_weak）默认不可走主采纳路径，除非 accept_weak=True。
+    """
     cg = get_candidate_group_for_project(db, candidate_group_id, project_id)
     if not cg:
         raise ValueError("候选组不存在")
+
+    if bool(getattr(cg, "is_weak", False)) and not accept_weak:
+        raise ValueError(WEAK_ACCEPT_MSG)
 
     # 检查是否已被裁决
     existing = db.query(Signal).filter(
@@ -262,14 +344,22 @@ def accept_group(
     if existing:
         raise ValueError(f"该候选组已被裁决（signal_id={existing.id}, status={existing.status}）")
 
+    candidate_type, statement, fingerprint = _signal_identity_from_group(db, cg)
+    name = (signal_name or "").strip() or statement or cg.group_label
+    evidence = _build_evidence_snapshot(db, candidate_group_id)
+
     sig = Signal(
         id=_uuid4(),
         project_id=cg.project_id or project_id,
-        signal_name=signal_name,
+        signal_name=name,
         status=SignalStatus.ACCEPTED.value,
+        candidate_type=candidate_type,
+        statement=statement or None,
         topic=cg.topic,
         candidate_group_id=candidate_group_id,
         human_rationale=human_rationale,
+        evidence_snapshot=evidence,
+        fingerprint=fingerprint,
         claim_count=cg.claim_count,
         adjudicated_at=datetime.utcnow(),
     )
@@ -304,7 +394,7 @@ def reject_group(
     human_rationale: Optional[str] = None,
     project_id: Optional[str] = None,
 ) -> Signal:
-    """否决候选组（不采纳）."""
+    """否决候选组（不采纳）. 写入 rejected 记录，不创建 accepted 信号."""
     cg = get_candidate_group_for_project(db, candidate_group_id, project_id)
     if not cg:
         raise ValueError("候选组不存在")
@@ -315,14 +405,20 @@ def reject_group(
     if existing:
         raise ValueError(f"该候选组已被裁决（signal_id={existing.id}, status={existing.status}）")
 
+    candidate_type, statement, fingerprint = _signal_identity_from_group(db, cg)
+
     sig = Signal(
         id=_uuid4(),
         project_id=cg.project_id or project_id,
         signal_name=None,  # 否决的信号不用命名
         status=SignalStatus.REJECTED.value,
+        candidate_type=candidate_type,
+        statement=statement or None,
         topic=cg.topic,
         candidate_group_id=candidate_group_id,
         human_rationale=human_rationale,
+        evidence_snapshot=[],
+        fingerprint=fingerprint,
         claim_count=0,  # 否决的不计 claim
         adjudicated_at=datetime.utcnow(),
     )
@@ -471,11 +567,14 @@ def list_signals(
     db: Session,
     project_id: str,
     status_filter: Optional[str] = None,
+    candidate_type: Optional[str] = None,
 ) -> list[Signal]:
-    """列出指定项目的信号，可选按状态过滤."""
+    """列出指定项目的信号，可选按状态 / 候选类型过滤."""
     q = db.query(Signal).filter(Signal.project_id == project_id)
     if status_filter:
         q = q.filter(Signal.status == status_filter)
+    if candidate_type:
+        q = q.filter(Signal.candidate_type == candidate_type)
     return q.order_by(Signal.updated_at.desc()).all()
 
 
@@ -523,6 +622,7 @@ def get_signal_detail(
             "paper_title": paper_title or "Unknown",
             "quote": claim.quote,
             "quote_page": claim.quote_page,
+            "page": claim.quote_page,
             "topic": claim.topic,
             "subject": getattr(claim, "subject", None),
             "is_limitation": bool(getattr(claim, "is_limitation", False)),
@@ -533,11 +633,31 @@ def get_signal_detail(
             "added_at": sc.added_at.isoformat() if sc.added_at else None,
         })
 
+    evidence = list(sig.evidence_snapshot or [])
+    if not evidence and sig.status == SignalStatus.ACCEPTED.value:
+        evidence = [
+            {
+                "claim_id": c["claim_id"],
+                "paper_id": c.get("paper_id"),
+                "paper_title": c.get("paper_title") or "Unknown",
+                "quote": c.get("quote") or "",
+                "page": int(c.get("quote_page") or c.get("page") or 0),
+                "quote_page": int(c.get("quote_page") or c.get("page") or 0),
+                "subject": c.get("subject"),
+                "topic": c.get("topic"),
+            }
+            for c in claims
+            if c.get("added_by") != ClaimAddition.MANUAL_REMOVE.value
+        ]
+
     return {
         "id": sig.id,
         "project_id": sig.project_id,
         "signal_name": sig.signal_name,
         "status": sig.status,
+        "type": sig.candidate_type,
+        "candidate_type": sig.candidate_type,
+        "statement": sig.statement,
         "topic": sig.topic,
         "candidate_group_id": sig.candidate_group_id,
         "human_rationale": sig.human_rationale,
@@ -546,6 +666,7 @@ def get_signal_detail(
         "updated_at": sig.updated_at.isoformat() if sig.updated_at else None,
         "adjudicated_at": sig.adjudicated_at.isoformat() if sig.adjudicated_at else None,
         "claims": claims,
+        "evidence": evidence,
     }
 
 
@@ -561,4 +682,6 @@ __all__ = [
     "serialize_candidate_group_detail",
     "get_candidate_group_for_project",
     "get_signal_for_project",
+    "list_rejected_fingerprints",
+    "WEAK_ACCEPT_MSG",
 ]

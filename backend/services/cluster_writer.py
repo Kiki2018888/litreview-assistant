@@ -16,7 +16,9 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from backend.models.tables import CandidateGroup, CandidateGroupClaim, CandidateType
+from backend.services.adjudication_service import list_rejected_fingerprints
 from backend.services.candidate_util import (
+    candidate_fingerprint,
     evidence_paper_ids,
     has_quote_evidence,
     one_liner,
@@ -50,7 +52,12 @@ def save_clustering_result(
         - project_id 必须可解析（参数或 result["project_id"]）。
 
     事务行为:
-        如果中途失败，整个 run 的全部写入回滚，不产生半截数据。
+        如果中途失败，整个 run 的全部写入回滚，不产生半截数据.
+
+    ADR-7:
+        只 INSERT 新的 candidate_groups。绝不 UPDATE/DELETE signals。
+        已否决候选（同 project + type + claim-set fingerprint）落库时标记
+        previously_rejected=True，而不是跳过，便于复查。
     """
     groups = result.get("groups", [])
     if not groups:
@@ -71,6 +78,7 @@ def save_clustering_result(
     try:
         # 事务包裹：with db.begin() 会在退出时 commit 或 rollback
         with db.begin():
+            rejected_fps = list_rejected_fingerprints(db, pid)
             for g in groups:
                 evidence = g.get("evidence", [])
                 candidate_type = (
@@ -91,8 +99,13 @@ def save_clustering_result(
                 statement = one_liner(g.get("statement") or g.get("group_label"))
                 label = statement or one_liner(g["group_label"])
                 method = (g.get("grouping_method") or "")[:50]
+                claim_ids = [
+                    str(ev["claim_id"]) for ev in evidence if ev.get("claim_id")
+                ]
+                fingerprint = candidate_fingerprint(candidate_type, claim_ids)
+                previously_rejected = fingerprint in rejected_fps
 
-                # ── 写入 candidate_groups ──
+                # ── 写入 candidate_groups（不碰 signals） ──
                 cg = CandidateGroup(
                     id=_uuid4(),
                     project_id=pid,
@@ -107,6 +120,8 @@ def save_clustering_result(
                     claim_count=g.get("claim_count", len(evidence)),
                     paper_count=paper_count,
                     is_weak=is_weak,
+                    fingerprint=fingerprint,
+                    previously_rejected=previously_rejected,
                 )
                 db.add(cg)
                 db.flush()  # 确保 cg.id 可用
