@@ -11,8 +11,6 @@ Covers:
 """
 from __future__ import annotations
 
-import hashlib
-import uuid
 from unittest.mock import AsyncMock, patch
 
 from backend.models.tables import (
@@ -20,76 +18,21 @@ from backend.models.tables import (
     CandidateGroupClaim,
     CandidateType,
     Claim,
-    Paper,
-    Project,
     Signal,
     SignalClaim,
     SignalStatus,
 )
 from backend.services.candidate_util import candidate_fingerprint
 from backend.services import db as db_mod
-
-ADJ = "/api/v1/adjudication"
-PROJECTS = "/api/v1/projects"
-
-
-def _uuid() -> str:
-    return str(uuid.uuid4())
-
-
-def _make_project(db, name: str) -> Project:
-    project = Project(id=_uuid(), name=name, description=None, paper_count=0, is_default=False)
-    db.add(project)
-    db.flush()
-    return project
-
-
-def _make_paper(db, project_id: str, title: str) -> Paper:
-    paper = Paper(
-        id=_uuid(),
-        file_path=f"/fake/papers/{uuid.uuid4()}.pdf",
-        file_size=1024,
-        page_count=3,
-        title=title,
-        status="completed",
-        project_id=project_id,
-        is_scanned=False,
-    )
-    db.add(paper)
-    db.flush()
-    return paper
-
-
-def _make_claim(
-    db,
-    paper_id: str,
-    quote: str,
-    *,
-    is_limitation: bool = True,
-    topic: str = "other",
-    subject: str = "RPE cells",
-    claim_form: str = "state",
-    direction: str | None = None,
-    quote_page: int = 1,
-) -> Claim:
-    quote_hash = hashlib.sha256(f"{quote}-{uuid.uuid4()}".encode("utf-8")).hexdigest()
-    claim = Claim(
-        id=_uuid(),
-        paper_id=paper_id,
-        claim_form=claim_form,
-        topic=topic,
-        subject=subject,
-        direction=direction,
-        stat_support=False,
-        is_limitation=is_limitation,
-        quote=quote[:300],
-        quote_hash=quote_hash,
-        quote_page=quote_page,
-        extraction_source="model",
-    )
-    db.add(claim)
-    db.flush()
-    return claim
+from backend.tests.test_discover import (
+    ADJ,
+    PROJECTS,
+    _empty_cluster,
+    _make_claim,
+    _make_paper,
+    _make_project,
+    _uuid,
+)
 
 
 def _make_group(
@@ -132,15 +75,37 @@ def _make_group(
     return cg
 
 
-def _empty_cluster(project_id: str) -> dict:
-    return {
-        "project_id": project_id,
-        "total_claims": 0,
-        "total_candidate_groups": 0,
-        "model_used": "mock-model",
-        "wall_time_seconds": 0.0,
-        "groups": [],
-    }
+def _post_discover(client, project_id: str):
+    with patch(
+        "backend.services.discover_service.run_clustering",
+        new=AsyncMock(return_value=_empty_cluster(project_id)),
+    ):
+        return client.post(f"{PROJECTS}/{project_id}/discover", json={})
+
+
+def _seed_quoted_contradiction(db, name: str, *, topic: str, quotes: list[tuple[str, int]]):
+    """Two papers, opposing effect claims — enough for rule-based discover."""
+    project = _make_project(db, name)
+    papers = [
+        _make_paper(db, project.id, f"{name} paper {idx}")
+        for idx in range(len(quotes))
+    ]
+    directions = ("up", "down")
+    for paper, (quote, page), direction in zip(papers, quotes, directions):
+        _make_claim(
+            db, paper.id, quote,
+            is_limitation=False, claim_form="effect", direction=direction,
+            topic=topic, quote_page=page,
+        )
+    db.commit()
+    return project
+
+
+def _contradiction_groups(client, project_id: str) -> list[dict]:
+    return client.get(
+        f"{ADJ}/candidate-groups",
+        params={"project_id": project_id, "type": "contradiction"},
+    ).json()
 
 
 def _reload_signal(signal_id: str) -> dict | None:
@@ -482,32 +447,13 @@ class TestListDetailFilters:
 
 class TestRediscoverAdr7:
     def test_rediscover_does_not_clobber_accepted_signal(self, client, db_session):
-        project = _make_project(db_session, "No Clobber")
-        p1 = _make_paper(db_session, project.id, "Paper Up")
-        p2 = _make_paper(db_session, project.id, "Paper Down")
-        _make_claim(
-            db_session, p1.id, "Vision improved at month 12.",
-            is_limitation=False, claim_form="effect", direction="up",
-            topic="efficacy", quote_page=5,
+        project = _seed_quoted_contradiction(
+            db_session, "No Clobber", topic="efficacy",
+            quotes=[("Vision improved at month 12.", 5), ("Vision declined at month 12.", 9)],
         )
-        _make_claim(
-            db_session, p2.id, "Vision declined at month 12.",
-            is_limitation=False, claim_form="effect", direction="down",
-            topic="efficacy", quote_page=9,
-        )
-        db_session.commit()
-
-        with patch(
-            "backend.services.discover_service.run_clustering",
-            new=AsyncMock(return_value=_empty_cluster(project.id)),
-        ):
-            first = client.post(f"{PROJECTS}/{project.id}/discover", json={})
+        first = _post_discover(client, project.id)
         assert first.status_code == 200, first.text
-
-        groups = client.get(
-            f"{ADJ}/candidate-groups",
-            params={"project_id": project.id, "type": "contradiction"},
-        ).json()
+        groups = _contradiction_groups(client, project.id)
         assert len(groups) == 1
         gid = groups[0]["id"]
 
@@ -520,11 +466,7 @@ class TestRediscoverAdr7:
         sig_id = accepted.json()["id"]
         original_snapshot = _reload_signal(sig_id)["evidence_snapshot"]
 
-        with patch(
-            "backend.services.discover_service.run_clustering",
-            new=AsyncMock(return_value=_empty_cluster(project.id)),
-        ):
-            second = client.post(f"{PROJECTS}/{project.id}/discover", json={})
+        second = _post_discover(client, project.id)
         assert second.status_code == 200, second.text
         assert second.json()["run_id"] != first.json()["run_id"]
 
@@ -556,32 +498,13 @@ class TestRediscoverAdr7:
         assert detail.json()["id"] == sig_id
 
     def test_rejected_candidates_marked_previously_rejected(self, client, db_session):
-        project = _make_project(db_session, "Prev Rejected")
-        p1 = _make_paper(db_session, project.id, "Paper Up")
-        p2 = _make_paper(db_session, project.id, "Paper Down")
-        _make_claim(
-            db_session, p1.id, "Safety improved.",
-            is_limitation=False, claim_form="effect", direction="up",
-            topic="safety", quote_page=2,
+        project = _seed_quoted_contradiction(
+            db_session, "Prev Rejected", topic="safety",
+            quotes=[("Safety improved.", 2), ("Safety worsened.", 6)],
         )
-        _make_claim(
-            db_session, p2.id, "Safety worsened.",
-            is_limitation=False, claim_form="effect", direction="down",
-            topic="safety", quote_page=6,
-        )
-        db_session.commit()
-
-        with patch(
-            "backend.services.discover_service.run_clustering",
-            new=AsyncMock(return_value=_empty_cluster(project.id)),
-        ):
-            first = client.post(f"{PROJECTS}/{project.id}/discover", json={})
+        first = _post_discover(client, project.id)
         assert first.status_code == 200, first.text
-
-        groups = client.get(
-            f"{ADJ}/candidate-groups",
-            params={"project_id": project.id, "type": "contradiction"},
-        ).json()
+        groups = _contradiction_groups(client, project.id)
         assert len(groups) == 1
         first_id = groups[0]["id"]
         assert groups[0]["previously_rejected"] is False
@@ -594,11 +517,7 @@ class TestRediscoverAdr7:
         assert rejected.status_code == 201, rejected.text
         rej_id = rejected.json()["id"]
 
-        with patch(
-            "backend.services.discover_service.run_clustering",
-            new=AsyncMock(return_value=_empty_cluster(project.id)),
-        ):
-            second = client.post(f"{PROJECTS}/{project.id}/discover", json={})
+        second = _post_discover(client, project.id)
         assert second.status_code == 200, second.text
 
         db_session.expire_all()
@@ -607,10 +526,7 @@ class TestRediscoverAdr7:
         assert still_rejected["status"] == SignalStatus.REJECTED.value
         assert still_rejected["status"] != SignalStatus.ACCEPTED.value
 
-        listed = client.get(
-            f"{ADJ}/candidate-groups",
-            params={"project_id": project.id, "type": "contradiction"},
-        ).json()
+        listed = _contradiction_groups(client, project.id)
         new_groups = [g for g in listed if g["id"] != first_id]
         assert new_groups
         assert all(g["previously_rejected"] is True for g in new_groups)

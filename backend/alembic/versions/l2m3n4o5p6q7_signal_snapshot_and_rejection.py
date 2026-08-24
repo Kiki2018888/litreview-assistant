@@ -19,53 +19,53 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-def _has_column(table: str, column: str) -> bool:
-    conn = op.get_bind()
-    rows = conn.execute(sa.text(f"PRAGMA table_info({table})")).fetchall()
-    return any(row[1] == column for row in rows)
+def _sqlite_columns(table: str) -> set[str]:
+    rows = op.get_bind().execute(sa.text(f"PRAGMA table_info({table})"))
+    return {row[1] for row in rows}
 
 
-def _has_index(name: str) -> bool:
-    conn = op.get_bind()
-    rows = conn.execute(
-        sa.text("SELECT name FROM sqlite_master WHERE type='index' AND name=:name"),
-        {"name": name},
-    ).fetchall()
-    return len(rows) > 0
+def _sqlite_index_names() -> set[str]:
+    rows = op.get_bind().execute(
+        sa.text("SELECT name FROM sqlite_master WHERE type='index'")
+    )
+    return {row[0] for row in rows if row[0]}
 
 
 def upgrade() -> None:
-    if not _has_column("signals", "candidate_type"):
+    columns_signals = _sqlite_columns("signals")
+    columns_groups = _sqlite_columns("candidate_groups")
+    indexes = _sqlite_index_names()
+    if "candidate_type" not in columns_signals:
         op.add_column(
             "signals",
             sa.Column("candidate_type", sa.String(length=30), nullable=True),
         )
-    if not _has_column("signals", "statement"):
+    if "statement" not in columns_signals:
         op.add_column(
             "signals",
             sa.Column("statement", sa.String(length=200), nullable=True),
         )
-    if not _has_column("signals", "evidence_snapshot"):
+    if "evidence_snapshot" not in columns_signals:
         op.add_column(
             "signals",
             sa.Column("evidence_snapshot", sa.JSON(), nullable=True),
         )
-    if not _has_column("signals", "fingerprint"):
+    if "fingerprint" not in columns_signals:
         op.add_column(
             "signals",
             sa.Column("fingerprint", sa.String(length=64), nullable=True),
         )
-    if not _has_index("ix_signals_type"):
+    if "ix_signals_type" not in indexes:
         op.create_index("ix_signals_type", "signals", ["candidate_type"])
-    if not _has_index("ix_signals_fingerprint"):
+    if "ix_signals_fingerprint" not in indexes:
         op.create_index("ix_signals_fingerprint", "signals", ["fingerprint"])
 
-    if not _has_column("candidate_groups", "fingerprint"):
+    if "fingerprint" not in columns_groups:
         op.add_column(
             "candidate_groups",
             sa.Column("fingerprint", sa.String(length=64), nullable=True),
         )
-    if not _has_column("candidate_groups", "previously_rejected"):
+    if "previously_rejected" not in columns_groups:
         op.add_column(
             "candidate_groups",
             sa.Column(
@@ -75,7 +75,7 @@ def upgrade() -> None:
                 server_default=sa.text("0"),
             ),
         )
-    if not _has_index("ix_candidate_groups_fingerprint"):
+    if "ix_candidate_groups_fingerprint" not in indexes:
         op.create_index(
             "ix_candidate_groups_fingerprint",
             "candidate_groups",
@@ -106,23 +106,26 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    if _has_index("ix_candidate_groups_fingerprint"):
+    columns_signals = _sqlite_columns("signals")
+    columns_groups = _sqlite_columns("candidate_groups")
+    indexes = _sqlite_index_names()
+    if "ix_candidate_groups_fingerprint" in indexes:
         op.drop_index(
             "ix_candidate_groups_fingerprint", table_name="candidate_groups",
         )
-    if _has_column("candidate_groups", "previously_rejected"):
+    if "previously_rejected" in columns_groups:
         op.drop_column("candidate_groups", "previously_rejected")
-    if _has_column("candidate_groups", "fingerprint"):
+    if "fingerprint" in columns_groups:
         op.drop_column("candidate_groups", "fingerprint")
-    if _has_index("ix_signals_fingerprint"):
+    if "ix_signals_fingerprint" in indexes:
         op.drop_index("ix_signals_fingerprint", table_name="signals")
-    if _has_index("ix_signals_type"):
+    if "ix_signals_type" in indexes:
         op.drop_index("ix_signals_type", table_name="signals")
-    if _has_column("signals", "fingerprint"):
+    if "fingerprint" in columns_signals:
         op.drop_column("signals", "fingerprint")
-    if _has_column("signals", "evidence_snapshot"):
+    if "evidence_snapshot" in columns_signals:
         op.drop_column("signals", "evidence_snapshot")
-    if _has_column("signals", "statement"):
+    if "statement" in columns_signals:
         op.drop_column("signals", "statement")
-    if _has_column("signals", "candidate_type"):
+    if "candidate_type" in columns_signals:
         op.drop_column("signals", "candidate_type")
