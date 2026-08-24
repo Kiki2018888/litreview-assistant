@@ -16,8 +16,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from backend.models.tables import Claim, Paper
-from backend.services.db import SessionLocal
+from backend.models.tables import CandidateType, Claim, Paper
+from backend.services.candidate_util import one_liner
+from backend.services import db as db_mod
 from backend.services.kimi_client import chat as kimi_chat, get_model_name
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,7 @@ def fetch_limitation_claims(project_id: str) -> list[ClaimRecord]:
     使用 ORM（不再硬编码 sqlite3 路径），接受 project_id 泛化。
     subject 字段必须读出并透传到 ClaimRecord。
     """
-    db = SessionLocal()
+    db = db_mod.SessionLocal()
     try:
         rows = (
             db.query(Claim, Paper.title)
@@ -257,11 +258,10 @@ async def group_one_topic(topic: str, claims: list[ClaimRecord]) -> list[Candida
 
 def _make_solo_group(topic: str, claims: list[ClaimRecord]) -> CandidateGroup:
     """构造孤例候选组（确定性，不调 LLM）。"""
-    label = (
-        f"孤例: {claims[0].quote[:60]}..."
-        if len(claims) == 1
-        else f"候选组: {topic}"
-    )
+    if len(claims) == 1:
+        label = one_liner(f"孤例: {claims[0].quote}")
+    else:
+        label = one_liner(f"候选组: {topic}")
     return CandidateGroup(
         group_label=label,
         topic=topic,
@@ -352,15 +352,21 @@ async def run_clustering(project_id: str) -> dict[str, Any]:
                 "page": c.quote_page,
                 "context": c.context_summary,
             })
+        paper_count = len(set(c.paper_id for c in g.claims))
+        statement = one_liner(g.group_label)
         groups_output.append({
             "candidate_group_id": i,
+            "candidate_type": CandidateType.LIMITATION_CLUSTER.value,
             "topic": g.topic,
-            "group_label": g.group_label,
+            "group_label": statement,
+            "statement": statement,
             "grouping_method": g.grouping_method,
             "grouping_basis": g.grouping_basis,
             "cross_paper": g.cross_paper,
-            "paper_count": len(set(c.paper_id for c in g.claims)),
+            "paper_count": paper_count,
             "claim_count": len(g.claims),
+            # < 2 papers: weak / foldable, not a primary adoptable cluster
+            "is_weak": paper_count < 2,
             # ADR-7: 裁决状态仅在人有操作后填充，初始为 pending
             "adjudication": {
                 "status": "pending",

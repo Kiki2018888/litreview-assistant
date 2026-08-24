@@ -73,6 +73,9 @@ def list_candidate_groups(
     db: Session,
     project_id: str,
     run_id: Optional[str] = None,
+    candidate_type: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    is_weak: Optional[bool] = None,
 ) -> list[dict]:
     """列出指定项目的候选组，附带裁决状态（已裁决则显示 signal_id/signal_name/status）."""
     # 子查询：每个 candidate_group 关联的 signal
@@ -101,6 +104,14 @@ def list_candidate_groups(
 
     if run_id:
         query = query.where(CandidateGroup.run_id == run_id)
+    if candidate_type:
+        query = query.where(CandidateGroup.candidate_type == candidate_type)
+    if is_weak is not None:
+        query = query.where(CandidateGroup.is_weak == is_weak)
+    if status_filter == "pending":
+        query = query.where(signal_sub.c.status.is_(None))
+    elif status_filter:
+        query = query.where(signal_sub.c.status == status_filter)
 
     rows = db.execute(query).all()
     return [
@@ -108,15 +119,21 @@ def list_candidate_groups(
             "id": cg.id,
             "project_id": cg.project_id,
             "run_id": cg.run_id,
+            "type": cg.candidate_type,
+            "candidate_type": cg.candidate_type,
             "group_label": cg.group_label,
+            "statement": cg.statement or cg.group_label,
             "topic": cg.topic,
             "grouping_method": cg.grouping_method,
             "grouping_basis": cg.grouping_basis,
             "cross_paper": cg.cross_paper,
             "claim_count": cg.claim_count,
+            "paper_count": cg.paper_count,
+            "is_weak": bool(cg.is_weak),
             "is_solo": cg.claim_count == 1,
             "created_at": cg.created_at.isoformat() if cg.created_at else None,
             "adjudication_status": adj_status,
+            "status": adj_status or "pending",
             "signal_id": sig_id,
             "signal_name": sig_name,
         }
@@ -163,14 +180,64 @@ def get_candidate_group_claims(
             "paper_title": paper_title or "Unknown",
             "quote": claim.quote,
             "quote_page": claim.quote_page,
+            "page": claim.quote_page,
             "topic": claim.topic,
             "subject": getattr(claim, "subject", None),
             "is_limitation": bool(getattr(claim, "is_limitation", False)),
             "context_summary": ctx,
             "claim_form": claim.claim_form,
             "quote_status": claim.quote_status,
+            "direction": getattr(claim, "direction", None),
+            "comparison_result": getattr(claim, "comparison_result", None),
         })
     return result
+
+
+def serialize_candidate_group_detail(
+    db: Session,
+    cg: CandidateGroup,
+) -> dict:
+    """候选组详情：statement / type / papers / evidence quotes."""
+    claims = get_candidate_group_claims(db, cg.id)
+    papers_map: dict[str, dict] = {}
+    evidence = []
+    for claim in claims:
+        pid = claim["paper_id"]
+        if pid not in papers_map:
+            papers_map[pid] = {
+                "paper_id": pid,
+                "paper_title": claim.get("paper_title") or "Unknown",
+            }
+        evidence.append({
+            "claim_id": claim["claim_id"],
+            "paper_id": pid,
+            "paper_title": claim.get("paper_title") or "Unknown",
+            "quote": claim.get("quote") or "",
+            "page": claim.get("quote_page") or 0,
+            "quote_page": claim.get("quote_page") or 0,
+            "subject": claim.get("subject"),
+            "topic": claim.get("topic"),
+        })
+    return {
+        "id": cg.id,
+        "project_id": cg.project_id,
+        "run_id": cg.run_id,
+        "type": getattr(cg, "candidate_type", None) or "limitation_cluster",
+        "candidate_type": getattr(cg, "candidate_type", None) or "limitation_cluster",
+        "group_label": cg.group_label,
+        "statement": getattr(cg, "statement", None) or cg.group_label,
+        "topic": cg.topic,
+        "grouping_method": cg.grouping_method,
+        "grouping_basis": cg.grouping_basis,
+        "cross_paper": cg.cross_paper,
+        "claim_count": cg.claim_count,
+        "paper_count": int(getattr(cg, "paper_count", 0) or 0),
+        "is_weak": bool(getattr(cg, "is_weak", False)),
+        "created_at": cg.created_at.isoformat() if cg.created_at else None,
+        "papers": list(papers_map.values()),
+        "evidence": evidence,
+        "claims": claims,
+    }
 
 
 # ── A1: 采纳候选组 → 创建 signal（status=accepted） ──
@@ -491,6 +558,7 @@ __all__ = [
     "get_signal_detail",
     "list_candidate_groups",
     "get_candidate_group_claims",
+    "serialize_candidate_group_detail",
     "get_candidate_group_for_project",
     "get_signal_for_project",
 ]

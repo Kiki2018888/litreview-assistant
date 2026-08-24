@@ -576,15 +576,21 @@ class CandidateGroupResponse(_ORMModel):
     id: str
     project_id: Optional[str] = None
     run_id: str
+    type: Optional[str] = None
+    candidate_type: Optional[str] = None
     group_label: str
+    statement: Optional[str] = None
     topic: str
     grouping_method: str
     grouping_basis: Optional[str] = None
     cross_paper: bool
     claim_count: int
+    paper_count: int = 0
+    is_weak: bool = False
     created_at: datetime
     # 关联的裁决状态（直接查询 signals 表计算）
     adjudication_status: Optional[str] = None  # null=pending, 或 accepted/rejected
+    status: Optional[str] = None
     signal_id: Optional[str] = None
     signal_name: Optional[str] = None
 

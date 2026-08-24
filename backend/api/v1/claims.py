@@ -876,13 +876,16 @@ class AdjudicationBlock(BaseModel):
 class CandidateGroupItem(BaseModel):
     """一个候选组的完整信息."""
     candidate_group_id: int
+    candidate_type: str = "limitation_cluster"
     topic: str
     group_label: str
+    statement: str = ""
     grouping_method: str
     grouping_basis: str
     cross_paper: bool
     paper_count: int
     claim_count: int
+    is_weak: bool = False
     adjudication: AdjudicationBlock
     evidence: list[EvidenceItem]
 
@@ -1006,6 +1009,99 @@ async def cluster_limitations(
     result["run_id"] = run_id
 
     return LimitationClusterResponse(**result)
+
+
+class DiscoverRequest(BaseModel):
+    """统一发现入口请求."""
+    force: bool = Field(False, description="预留：强制重跑（当前每次均重新生产候选）")
+
+
+class DiscoverResponse(BaseModel):
+    """统一发现入口响应（局限聚类 + 矛盾检测）。"""
+    job_id: str
+    project_id: str
+    status: str
+    run_id: str = ""
+    limitation_groups: int = 0
+    contradiction_groups: int = 0
+    weak_count: int = 0
+    primary_count: int = 0
+    total_candidate_groups: int = 0
+    wall_time_seconds: float = 0.0
+
+
+@router.post(
+    "/{project_id}/discover",
+    response_model=DiscoverResponse,
+    summary="发现机会 — 局限聚类 + 规则矛盾检测（同一 Job 两阶段）",
+)
+async def discover_opportunities(
+    project_id: str,
+    body: DiscoverRequest = DiscoverRequest(),  # noqa: ARG001
+    db: Session = Depends(get_db),
+) -> DiscoverResponse:
+    """对项目执行 Signals 发现：局限聚类与矛盾检测，同一 Job 暴露进度/失败.
+
+    落库失败返回 HTTP 500（与局限聚类一致），同时 job.status=failed。
+    """
+    from backend.services.discover_service import (
+        create_discover_job,
+        fail_discover_job,
+        get_in_progress_discover_job,
+        run_discover,
+    )
+
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail=f"项目 {project_id} 不存在")
+
+    existing = get_in_progress_discover_job(project_id)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"该项目已有进行中的发现任务 "
+                f"(job_id={existing.id}, status={existing.status})"
+            ),
+        )
+
+    job = create_discover_job(project_id)
+    logger.info("开始 discover: project_id=%s job_id=%s", project_id, job.id)
+
+    try:
+        result = await asyncio.wait_for(
+            run_discover(project_id, job.id),
+            timeout=_CLUSTERING_TIMEOUT,
+        )
+    except ValueError as exc:
+        fail_discover_job(job.id, phase="limitation_cluster", error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except asyncio.TimeoutError:
+        model_name = _get_model_name_safe()
+        msg = (
+            f"发现任务超时（{_CLUSTERING_TIMEOUT:.0f} 秒）。"
+            f"当前模型 {model_name} 可能过慢。"
+        )
+        fail_discover_job(job.id, phase="limitation_cluster", error=msg)
+        logger.error("discover 超时: project_id=%s job_id=%s", project_id, job.id)
+        raise HTTPException(status_code=504, detail=msg) from None
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # run_discover already marks the job failed for clustering/contradiction/persist
+        logger.exception("discover 失败: project_id=%s job_id=%s", project_id, job.id)
+        detail = str(exc)[:300]
+        if "落库" in detail or "persist" in detail.lower() or "run_id" in detail:
+            raise HTTPException(
+                status_code=500,
+                detail=f"发现任务落库失败: {detail}",
+            ) from exc
+        raise HTTPException(
+            status_code=500,
+            detail=f"发现任务失败: {detail}",
+        ) from exc
+
+    return DiscoverResponse(**result)
 
 
 __all__ = ["router", "estimate_router", "jobs_router"]
