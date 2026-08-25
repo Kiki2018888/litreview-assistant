@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import and_, func, select
@@ -728,7 +728,7 @@ def render_accepted_signals_markdown(
     exported_at: Optional[str] = None,
 ) -> str:
     """Pure Markdown renderer (empty list → valid 'no accepted Signals' doc)."""
-    stamp = exported_at or (datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
+    stamp = exported_at or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
         "# 已采纳 Signal",
         "",
