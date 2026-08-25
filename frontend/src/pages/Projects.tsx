@@ -7,6 +7,7 @@ import {
   Trash2,
   Loader2,
   FileText,
+  Sparkles,
 } from "lucide-react"
 import { toast } from "sonner"
 import { apiGet, apiPost, apiPut, apiDelete } from "../api/client"
@@ -132,6 +133,10 @@ export default function ProjectsPage() {
     navigate(`/?project_id=${project.id}`)
   }
 
+  const openProjectSignals = (project: Project) => {
+    navigate(`/adjudication?project_id=${project.id}`)
+  }
+
   const formatTime = (iso: string) => {
     try {
       return new Date(iso).toLocaleString("zh-CN", {
@@ -233,14 +238,23 @@ export default function ProjectsPage() {
                 <span>更新于 {formatTime(project.updated_at)}</span>
               </div>
 
-              <Button
-                variant="outline"
-                size="sm"
-                className="mt-3 w-full"
-                onClick={() => openProjectLiterature(project)}
-              >
-                查看文献
-              </Button>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => openProjectLiterature(project)}
+                >
+                  查看文献
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => openProjectSignals(project)}
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  发现机会
+                </Button>
+              </div>
             </div>
           ))}
         </div>

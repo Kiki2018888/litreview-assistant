@@ -465,26 +465,51 @@ export interface ProjectExtractRequest {
 export type BatchExtractRequest = ProjectExtractRequest
 
 // ---------------------------------------------------------------------------
-// Adjudication — 裁决（ADR-7）
+// Adjudication / Signals — 裁决（ADR-7）
 // ---------------------------------------------------------------------------
 
 /** 裁决状态 */
 export type AdjudicationStatus = "pending" | "accepted" | "rejected"
+/** 候选类型（局限聚类 / 规则矛盾） */
+export type CandidateType = "limitation_cluster" | "contradiction"
 /** claim 被加入信号的方式 */
 export type ClaimAddition = "adopted_from_group" | "manual_remove"
+
+/** 证据条目（候选详情 / 信号快照共用；page 与 quote_page 后端会同时返回） */
+export interface EvidenceItem {
+  claim_id: string
+  paper_id: string | null
+  paper_title: string | null
+  quote: string | null
+  page: number | null
+  quote_page?: number | null
+  subject: string | null
+  topic: string | null
+  direction?: string | null
+  comparison_result?: string | null
+  claim_form?: string | null
+}
 
 /** 候选组列表项 */
 export interface CandidateGroup {
   id: string
+  project_id: string | null
   run_id: string
+  type: string | null
+  candidate_type: string | null
   group_label: string
+  statement: string | null
   topic: string | null
   grouping_method: string | null
   grouping_basis: string | null
   cross_paper: boolean
   claim_count: number
+  paper_count: number
+  is_weak: boolean
+  previously_rejected: boolean
   created_at: string
   adjudication_status: string | null
+  status: string | null
   signal_id: string | null
   signal_name: string | null
 }
@@ -496,35 +521,36 @@ export interface ClaimInfo {
   paper_title: string
   quote: string
   quote_page: number | null
+  page?: number | null
   topic: string | null
   context_summary: string | null
   claim_form: string | null
   quote_status: string | null
   /** ADR-7 命脉：研究对象（如 "iPSC-derived RPE cells"） */
   subject: string | null
+  is_limitation?: boolean
+  direction?: string | null
+  comparison_result?: string | null
   added_by?: string
   added_at?: string
 }
 
-/** 候选组详情 */
-export interface CandidateGroupDetail {
-  id: string
-  run_id: string
-  group_label: string
-  topic: string | null
-  grouping_method: string | null
-  grouping_basis: string | null
-  cross_paper: boolean
-  claim_count: number
-  created_at: string
+/** 候选组详情（含 evidence + claims） */
+export interface CandidateGroupDetail extends CandidateGroup {
+  papers: { paper_id: string; paper_title: string }[]
+  evidence: EvidenceItem[]
   claims: ClaimInfo[]
 }
 
 /** 信号列表项 / 创建响应 */
 export interface Signal {
   id: string
+  project_id: string | null
   signal_name: string | null
   status: string
+  type: string | null
+  candidate_type: string | null
+  statement: string | null
   topic: string | null
   candidate_group_id: string | null
   human_rationale: string | null
@@ -534,9 +560,33 @@ export interface Signal {
   adjudicated_at: string | null
 }
 
-/** 信号详情（含 claims） */
+/** 信号详情（含 claims + 采纳时固化的 evidence 快照） */
 export interface SignalDetail extends Signal {
   claims: ClaimInfo[]
+  evidence: EvidenceItem[]
+}
+
+/** 创建裁决请求 */
+export interface AdjudicateRequest {
+  action: "accept" | "reject"
+  candidate_group_id: string
+  signal_name?: string
+  human_rationale?: string
+  accept_weak?: boolean
+}
+
+/** POST /projects/{id}/discover 响应 */
+export interface DiscoverResponse {
+  job_id: string
+  project_id: string
+  status: string
+  run_id: string
+  limitation_groups: number
+  contradiction_groups: number
+  weak_count: number
+  primary_count: number
+  total_candidate_groups: number
+  wall_time_seconds: number
 }
 
 // ---------------------------------------------------------------------------
@@ -559,14 +609,16 @@ export interface ClaimsExtractStartResponse {
   estimate: Record<string, unknown>
 }
 
-/** Job 状态响应 */
+/** Job 状态响应（GET /jobs/{job_id}/status） */
 export interface JobStatusResponse {
   job_id: string
-  project_id: string
+  job_type: string
   status: string
-  total_paper_count: number
-  completed_count: number
-  failed_count: number
+  project_id: string
+  total: number
+  current: number
+  succeeded: number
+  failed: number
   current_paper_id: string | null
   current_paper_title: string | null
   error_summary: Record<string, unknown> | null

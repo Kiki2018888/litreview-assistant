@@ -76,6 +76,19 @@ export async function apiDelete<T>(path: string): Promise<T> {
   return res.json()
 }
 
+/** Build `?a=1&b=false` from a dict; skips undefined/null/"". Booleans are kept (`false` is a real filter). */
+export function buildQuery(
+  params: Record<string, string | number | boolean | null | undefined>,
+): string {
+  const sp = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") continue
+    sp.set(key, String(value))
+  }
+  const qs = sp.toString()
+  return qs ? `?${qs}` : ""
+}
+
 /** 文件上传（multipart/form-data），不做 JSON 编码 */
 export async function apiUpload<T>(path: string, formData: FormData): Promise<T> {
   const base = await resolveApiBase()

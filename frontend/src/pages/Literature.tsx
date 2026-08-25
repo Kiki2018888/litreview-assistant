@@ -7,8 +7,7 @@ import ChatPanel from "../components/ChatPanel"
 import { apiGet, apiPost } from "../api/client"
 import { useSSE } from "../hooks/useSSE"
 import { toast } from "sonner"
-import { Gavel, GitBranch, Loader2, Clock, FileText } from "lucide-react"
-import { COMING_SOON_MESSAGE } from "../components/ComingSoon"
+import { Gavel, GitBranch, Loader2, Clock, FileText, Sparkles } from "lucide-react"
 import type { Project, ProjectListResponse, ClaimsExtractStartResponse } from "../types"
 
 // ============================================================================
@@ -307,12 +306,14 @@ export default function Literature() {
     }
   }, [projectFilter, summaryExtracting, startSummarySSE, handleRefresh])
 
-  // ── A2: 项目级分析局限（聚类） ──
-  // 信号发现模块（局限聚类→裁决）本版未发布，入口统一占位，不再发起任何网络请求。
-  // 后端 /projects/{id}/clustering/limitation 路由与服务保留，将来就绪后换回真实实现即可。
-  const handleProjectCluster = useCallback(() => {
-    toast(COMING_SOON_MESSAGE)
-  }, [])
+  // ── A2: 发现机会 / 分析局限 → Signals 工作台（带 project_id） ──
+  const goSignals = useCallback(() => {
+    if (!projectFilter) {
+      toast.error("请先选择项目")
+      return
+    }
+    navigation(`/adjudication?project_id=${encodeURIComponent(projectFilter)}`)
+  }, [navigation, projectFilter])
 
   const showDetailOnly = detailPaperId !== null && chatMode === null
 
@@ -402,21 +403,20 @@ export default function Literature() {
                 )}
               </button>
 
-              {/* A2: 分析局限（聚类）— 本版未发布，点击仅提示"敬请期待" */}
+              {/* A2: 发现机会 / 分析局限 → Signals 工作台 */}
               <button
-                onClick={handleProjectCluster}
+                onClick={goSignals}
                 className="inline-flex items-center gap-1.5 rounded-md border border-cyan-200 dark:border-cyan-800 bg-cyan-50 dark:bg-cyan-950/30 px-3 py-1.5 text-xs font-medium text-cyan-700 dark:text-cyan-300 hover:bg-cyan-100 dark:hover:bg-cyan-950/50 transition-colors disabled:opacity-40"
               >
-                <GitBranch className="h-3.5 w-3.5" />
-                分析局限
+                <Sparkles className="h-3.5 w-3.5" />
+                发现机会 / 分析局限
               </button>
 
-              {/* 跳转裁决面板 */}
               <button
-                onClick={() => navigation("/adjudication")}
+                onClick={goSignals}
                 className="ml-auto inline-flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:border-primary/50 transition-colors"
               >
-                裁决面板 →
+                机会 / Signals →
               </button>
             </div>
 
