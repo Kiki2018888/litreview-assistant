@@ -40,6 +40,23 @@ async function throwHttpError(res: Response, method: string, path: string): Prom
   throw new Error(detail)
 }
 
+export async function apiGetText(path: string): Promise<{
+  text: string
+  filename: string | null
+  contentType: string
+}> {
+  const base = await resolveApiBase()
+  const res = await fetch(`${base}${path}`)
+  if (!res.ok) await throwHttpError(res, 'GET', path)
+  const disposition = res.headers.get('Content-Disposition') ?? ''
+  const match = /filename="?([^";]+)"?/i.exec(disposition)
+  return {
+    text: await res.text(),
+    filename: match?.[1] ?? null,
+    contentType: res.headers.get('Content-Type') ?? '',
+  }
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const base = await resolveApiBase()
   const res = await fetch(`${base}${path}`)

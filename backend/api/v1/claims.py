@@ -920,8 +920,8 @@ class LimitationClusterResponse(BaseModel):
     groups: list[CandidateGroupItem]
 
 
-# 聚类总超时：留 2s buffer 给 HTTP 往返
-_CLUSTERING_TIMEOUT = 28.0
+# 聚类 / discover 同步超时。28s 会在慢模型跑完前 504，工作台看不到结果。
+_CLUSTERING_TIMEOUT = 180.0
 
 
 @router.post(
@@ -951,8 +951,8 @@ async def cluster_limitations(
     - 不碰 signals 表（信号由人裁决后产生）
 
     超时处理：
-    - 快模型 < 30秒：同步返回结果
-    - 慢模型超时：返回 504 错误，提示用户使用更快模型重试
+    - 在 _CLUSTERING_TIMEOUT（默认 180 秒）内同步返回结果
+    - 超时：返回 504 错误，提示用户使用更快模型重试
     """
     # 校验项目存在
     project = db.query(Project).filter(Project.id == project_id).first()

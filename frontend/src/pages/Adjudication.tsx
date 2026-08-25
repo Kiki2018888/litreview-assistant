@@ -9,6 +9,7 @@ import {
   AlertTriangle,
   Check,
   Copy,
+  Download,
   FileText,
   GitBranch,
   Loader2,
@@ -21,6 +22,7 @@ import { toast } from "sonner"
 import {
   adjudicate,
   discoverOpportunities,
+  downloadAcceptedSignalsMarkdown,
   getCandidateGroup,
   getJobStatus,
   getProjectClaimsTotal,
@@ -198,6 +200,7 @@ function SignalsWorkbench({
   const [jobProgress, setJobProgress] = useState("")
   const [jobStatus, setJobStatus] = useState<JobStatusResponse | null>(null)
   const [jobError, setJobError] = useState("")
+  const [exporting, setExporting] = useState(false)
   const [lastDiscover, setLastDiscover] = useState<DiscoverResponse | null>(null)
 
   const [rejectRationale, setRejectRationale] = useState("")
@@ -409,6 +412,19 @@ function SignalsWorkbench({
     }
   }, [projectId, candidateDetail, rejectRationale, closeDetail, refreshLists])
 
+  const handleExport = useCallback(async () => {
+    if (!projectId || exporting) return
+    setExporting(true)
+    try {
+      const filename = await downloadAcceptedSignalsMarkdown(projectId)
+      toast.success(`已导出 ${filename}`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "导出 Markdown 失败")
+    } finally {
+      setExporting(false)
+    }
+  }, [projectId, exporting])
+
   const emptyKind = useMemo(() => {
     if (tab !== "pending") return null
     if (loadingList) return null
@@ -493,6 +509,22 @@ function SignalsWorkbench({
               />
               显示弱候选
             </label>
+          )}
+          {tab === "accepted" && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="ml-auto"
+              disabled={!projectId || exporting}
+              onClick={() => void handleExport()}
+            >
+              {exporting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Download className="h-3.5 w-3.5" />
+              )}
+              导出 Markdown
+            </Button>
           )}
         </div>
 
