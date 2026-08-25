@@ -19,6 +19,7 @@ from backend.models.tables import (
     Claim,
     ClaimAddition,
     Paper,
+    Project,
     Signal,
     SignalClaim,
     SignalStatus,
@@ -670,6 +671,135 @@ def get_signal_detail(
     }
 
 
+# ── 导出：已采纳 Signal → Markdown ──
+
+
+TYPE_LABEL_ZH = {
+    CandidateType.LIMITATION_CLUSTER.value: "局限聚类",
+    CandidateType.CONTRADICTION.value: "矛盾",
+}
+
+_EMPTY_EXPORT_BODY = "当前项目没有已采纳的 Signal。"
+
+
+def _blockquote(quote: str) -> str:
+    text = (quote or "").strip() or "（无摘录）"
+    return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
+
+
+def _evidence_page(ev: dict) -> int:
+    raw = ev.get("page")
+    if raw is None:
+        raw = ev.get("quote_page")
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _format_evidence_item(ev: dict, heading: Optional[str] = None) -> list[str]:
+    title = str(ev.get("paper_title") or "Unknown").strip() or "Unknown"
+    page_n = _evidence_page(ev)
+    page_bit = f"（第 {page_n} 页）" if page_n > 0 else "（页码未知）"
+    lines: list[str] = []
+    if heading:
+        lines.append(f"**{heading}**")
+        lines.append("")
+    lines.append(f"- **{title}**{page_bit}")
+    lines.append("")
+    lines.append(_blockquote(str(ev.get("quote") or "")))
+    lines.append("")
+    return lines
+
+
+def _signal_evidence(db: Session, sig: Signal) -> list[dict]:
+    snapshot = list(sig.evidence_snapshot or [])
+    if snapshot:
+        return snapshot
+    detail = get_signal_detail(db, sig.id, project_id=sig.project_id)
+    return list((detail or {}).get("evidence") or [])
+
+
+def render_accepted_signals_markdown(
+    *,
+    project_id: str,
+    project_name: str,
+    signals: list[tuple[Signal, list[dict]]],
+    exported_at: Optional[str] = None,
+) -> str:
+    """Pure Markdown renderer (empty list → valid 'no accepted Signals' doc)."""
+    stamp = exported_at or (datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
+    lines = [
+        "# 已采纳 Signal",
+        "",
+        f"- 项目：{project_name}",
+        f"- 项目 ID：`{project_id}`",
+        f"- 导出时间：{stamp}",
+        "",
+    ]
+    if not signals:
+        lines.append(_EMPTY_EXPORT_BODY)
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append(f"共 **{len(signals)}** 条已采纳 Signal。")
+    lines.append("")
+
+    for idx, (sig, evidence) in enumerate(signals, start=1):
+        title = (
+            (sig.signal_name or sig.statement or "（无陈述）").strip() or "（无陈述）"
+        )
+        ctype = sig.candidate_type or CandidateType.LIMITATION_CLUSTER.value
+        label = TYPE_LABEL_ZH.get(ctype, ctype)
+        lines.append(f"## {idx}. {title}")
+        lines.append("")
+        lines.append(f"- 类型：{label}（`{ctype}`）")
+        statement = (sig.statement or "").strip()
+        if statement and statement != title:
+            lines.append(f"- 陈述：{statement}")
+        lines.append("")
+
+        is_contradiction = ctype == CandidateType.CONTRADICTION.value
+        lines.append("### 双方证据" if is_contradiction else "### 证据")
+        lines.append("")
+        if not evidence:
+            lines.append("（无证据指针）")
+            lines.append("")
+            continue
+        if is_contradiction:
+            side_labels = ("一方", "另一方")
+            for ev_i, ev in enumerate(evidence):
+                heading = side_labels[ev_i] if ev_i < 2 else f"证据 {ev_i + 1}"
+                lines.extend(_format_evidence_item(ev, heading=heading))
+        else:
+            for ev in evidence:
+                lines.extend(_format_evidence_item(ev))
+
+    return "\n".join(lines)
+
+
+def export_accepted_signals_markdown(db: Session, project_id: str) -> str:
+    """Build Markdown of accepted Signals for this project.
+
+    Missing project → ValueError（路由映射 404）。空项目仍返回合法 Markdown。
+    """
+    project = db.get(Project, project_id)
+    if not project:
+        raise ValueError("项目不存在")
+
+    accepted = list_signals(
+        db,
+        project_id=project_id,
+        status_filter=SignalStatus.ACCEPTED.value,
+    )
+    packed = [(sig, _signal_evidence(db, sig)) for sig in accepted]
+    return render_accepted_signals_markdown(
+        project_id=project_id,
+        project_name=project.name or project_id,
+        signals=packed,
+    )
+
+
 __all__ = [
     "accept_group",
     "reject_group",
@@ -683,5 +813,7 @@ __all__ = [
     "get_candidate_group_for_project",
     "get_signal_for_project",
     "list_rejected_fingerprints",
+    "export_accepted_signals_markdown",
+    "render_accepted_signals_markdown",
     "WEAK_ACCEPT_MSG",
 ]

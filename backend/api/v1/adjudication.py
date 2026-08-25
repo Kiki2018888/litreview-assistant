@@ -4,6 +4,7 @@
   GET    /candidate-groups        — 列出候选组（含裁决状态 / previously_rejected）
   GET    /candidate-groups/{id}   — 候选组详情（含 claims）
   GET    /signals                 — 列出项目内裁决信号（可按 type/status）
+  GET    /signals/export.md       — 导出已采纳 Signal 为 Markdown
   GET    /signals/{id}            — 信号详情（含 evidence 快照）
   POST   /signals                 — 创建裁决（accept/reject）
   PATCH  /signals/{id}            — 修改裁决（改名/改状态/改备注）
@@ -13,6 +14,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 
 from backend.models.schemas import (
     AdjudicateRequest,
@@ -29,6 +31,7 @@ from backend.services.adjudication_service import (
     list_candidate_groups,
     get_candidate_group_for_project,
     serialize_candidate_group_detail,
+    export_accepted_signals_markdown,
     WEAK_ACCEPT_MSG,
 )
 from backend.services.db import SessionLocal
@@ -119,6 +122,31 @@ def get_signals(
             candidate_type=type,
         )
         return [SignalResponse.model_validate(s) for s in sigs]
+    finally:
+        db.close()
+
+
+@router.get(
+    "/signals/export.md",
+    summary="导出当前项目已采纳 Signal 为 Markdown",
+)
+def export_signals_markdown(
+    project_id: str = Query(..., description="项目 ID"),
+):
+    """仅导出本项目 status=accepted 的 Signal（含证据指针）。空项目返回合法 Markdown，不 500。"""
+    db = SessionLocal()
+    try:
+        markdown = export_accepted_signals_markdown(db, project_id)
+        filename = f"signals-{project_id}.md"
+        return Response(
+            content=markdown,
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     finally:
         db.close()
 

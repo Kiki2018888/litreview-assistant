@@ -3,7 +3,7 @@
 // 一律带 project_id（裁决按项目隔离）
 // ============================================================================
 
-import { apiGet, apiPost, buildQuery } from "./client"
+import { apiGet, apiPost, apiGetText, buildQuery } from "./client"
 import type {
   AdjudicateRequest,
   CandidateGroup,
@@ -106,4 +106,35 @@ export function getProjectClaimsTotal(projectId: string): Promise<number> {
 export function parseJobIdFromError(message: string): string | null {
   const match = message.match(/job_id=([0-9a-f-]{36})/i)
   return match?.[1] ?? null
+}
+
+export async function exportAcceptedSignalsMarkdown(projectId: string): Promise<{
+  markdown: string
+  filename: string
+}> {
+  const { text, filename } = await apiGetText(
+    `/adjudication/signals/export.md${adjQuery(projectId)}`,
+  )
+  return {
+    markdown: text,
+    filename: filename || `signals-${projectId}.md`,
+  }
+}
+
+export async function downloadAcceptedSignalsMarkdown(projectId: string): Promise<string> {
+  const { markdown, filename } = await exportAcceptedSignalsMarkdown(projectId)
+  const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" })
+  const url = URL.createObjectURL(blob)
+  try {
+    const a = document.createElement("a")
+    a.href = url
+    a.download = filename
+    a.rel = "noopener"
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+  return filename
 }
