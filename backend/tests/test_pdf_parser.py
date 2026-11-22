@@ -6,6 +6,11 @@ from unittest.mock import patch
 
 import pytest
 
+from backend.config import (
+    SCANNED_DOC_AVG_MIN_CHARS,
+    SCANNED_DOC_MIN_CHARS,
+    SCANNED_PAGE_MIN_CHARS,
+)
 from backend.services.pdf_parser import (
     PageInfo,
     PaperMetadata,
@@ -15,6 +20,7 @@ from backend.services.pdf_parser import (
     _parse_with_pdfplumber,
     _parse_with_pymupdf,
     extract_full_text,
+    is_document_scanned,
     parse_pdf,
 )
 
@@ -95,6 +101,35 @@ class TestScannedPageDetection:
         assert result.total_chars == 0
 
 
+class TestDocumentScanThreshold:
+    """全篇扫描判定：总字符、页均字符、有效页占比，三者任一即扫描版."""
+
+    def test_empty_document_is_scanned(self):
+        assert is_document_scanned([]) is True
+
+    def test_total_chars_boundary(self):
+        assert is_document_scanned([SCANNED_DOC_MIN_CHARS - 1]) is True
+        assert is_document_scanned([SCANNED_DOC_MIN_CHARS]) is False
+
+    def test_low_average_chars_is_scanned_even_if_total_is_enough(self):
+        # 11 pages just under the per-page average, total still above the doc minimum.
+        per_page = SCANNED_DOC_AVG_MIN_CHARS - 1
+        pages = max(11, (SCANNED_DOC_MIN_CHARS // per_page) + 1)
+        counts = [per_page] * pages
+        assert sum(counts) >= SCANNED_DOC_MIN_CHARS
+        assert is_document_scanned(counts) is True
+
+    def test_sparse_effective_page_ratio_is_scanned(self):
+        # One dense page and many near-empty pages: total and average can pass
+        # while the effective-page ratio stays under the gate.
+        dense = SCANNED_PAGE_MIN_CHARS * 20
+        sparse = [0] * 9
+        counts = [dense, *sparse]
+        assert sum(counts) >= SCANNED_DOC_MIN_CHARS
+        assert (sum(counts) / len(counts)) >= SCANNED_DOC_AVG_MIN_CHARS
+        assert is_document_scanned(counts) is True
+
+
 class TestMetadataExtraction:
     """元数据提取测试."""
 
@@ -118,27 +153,48 @@ class TestMetadataExtraction:
         assert result.title is None
 
 
+def _parse_mocked_pdfplumber_page(tmp_path, filename: str, text: str):
+    """parse_pdf with pdfplumber text/metadata replaced by a single fake page."""
+    pdf_file = tmp_path / filename
+    pdf_file.write_bytes(b"%PDF-1.4\n%%EOF")
+    fake_page = PageInfo(
+        page_number=1,
+        text_content=text,
+        char_count=len(text),
+        is_scanned=False,
+    )
+    with patch(
+        "backend.services.pdf_parser._parse_with_pdfplumber",
+        return_value=[fake_page],
+    ):
+        with patch(
+            "backend.services.pdf_parser._extract_metadata_pdfplumber",
+            return_value=PaperMetadata(title="Hello", authors=["X"], year=2023, journal="Test"),
+        ):
+            return parse_pdf(str(pdf_file))
+
+
 class TestParsePdfIntegration:
     """parse_pdf 完整流程 (mock 子解析器)."""
 
     def test_parse_pdf_success(self, tmp_path):
         """完整解析成功."""
-        pdf_file = tmp_path / "test.pdf"
-        pdf_file.write_bytes(b"%PDF-1.4\n%%EOF")
-        fake_page = PageInfo(page_number=1, text_content="Hello world content here with enough characters for scan detection.", char_count=80, is_scanned=False)
-        with patch(
-            "backend.services.pdf_parser._parse_with_pdfplumber",
-            return_value=[fake_page],
-        ):
-            with patch(
-                "backend.services.pdf_parser._extract_metadata_pdfplumber",
-                return_value=PaperMetadata(title="Hello", authors=["X"], year=2023, journal="Test"),
-            ):
-                result = parse_pdf(str(pdf_file))
-                assert result.page_count == 1
-                assert result.parser_used == "pdfplumber"
-                assert result.metadata.title == "Hello"
-                assert result.is_scanned is False
+        page_text = "Hello world content here with enough characters for scan detection. " * 12
+        assert len(page_text) >= SCANNED_DOC_MIN_CHARS
+        result = _parse_mocked_pdfplumber_page(tmp_path, "test.pdf", page_text)
+        assert result.page_count == 1
+        assert result.parser_used == "pdfplumber"
+        assert result.metadata.title == "Hello"
+        assert result.is_scanned is False
+
+    def test_parse_pdf_below_doc_min_chars_is_scanned(self, tmp_path):
+        """全篇低于扫描阈值时判为扫描版，不采用调用方传入的 is_scanned=False."""
+        short = "Hello world content here with enough characters for scan detection."
+        assert len(short) < SCANNED_DOC_MIN_CHARS
+        result = _parse_mocked_pdfplumber_page(tmp_path, "short.pdf", short)
+        assert result.parser_used == "pdfplumber"
+        assert result.metadata.title == "Hello"
+        assert result.is_scanned is True
 
     def test_parse_pdf_fallback_to_pymupdf(self, tmp_path):
         """pdfplumber 失败 → pymupdf fallback."""
