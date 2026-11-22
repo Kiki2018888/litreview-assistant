@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from backend.config import SCANNED_DOC_MIN_CHARS
 from backend.models.tables import Paper, PaperPage
 from backend.tests.helpers import make_kimi_client_instance, make_chat_completion
 
@@ -67,11 +68,15 @@ class TestSingleExtractSSE:
         )
         db_session.add(paper)
         db_session.flush()
+        # Document-level scan gate rejects totals below SCANNED_DOC_MIN_CHARS.
+        # This success path must sit on the other side of that gate.
+        page_text = "Full paper text content for extraction testing. " * 20
+        assert len(page_text) >= SCANNED_DOC_MIN_CHARS
         db_session.add(PaperPage(
             paper_id=pid,
             page_number=1,
-            text_content="Full paper text content for extraction testing.",
-            char_count=45,
+            text_content=page_text,
+            char_count=len(page_text),
         ))
         db_session.commit()
 
@@ -91,6 +96,24 @@ class TestSingleExtractSSE:
                 paper = db_session.query(Paper).filter(Paper.id == pid).first()
                 assert paper is not None
                 assert paper.status in ("completed", "extracting", "pending")
+
+    def test_extract_below_scan_threshold_is_400(self, client, db_session):
+        """全篇字符低于扫描阈值时拒绝提取，即使 is_scanned 标志为假."""
+        pid = str(uuid.uuid4())
+        short = "x" * (SCANNED_DOC_MIN_CHARS - 1)
+        paper = Paper(
+            id=pid, file_path="/f/short.pdf", file_size=100, page_count=1,
+            status="pending", is_scanned=False, title="Short",
+        )
+        db_session.add(paper)
+        db_session.add(PaperPage(
+            paper_id=pid, page_number=1, text_content=short, char_count=len(short),
+        ))
+        db_session.commit()
+
+        resp = client.post(f"{LIT}/{pid}/extract")
+        assert resp.status_code == 400
+        assert "扫描" in resp.json()["detail"]
 
     def test_extract_paper_with_no_content(self, client, db_session):
         """无页面内容的文献."""
