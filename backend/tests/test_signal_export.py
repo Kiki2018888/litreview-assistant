@@ -40,6 +40,46 @@ def _reject(client, project_id: str, group_id: str):
     )
 
 
+def _seed_vision_contradiction(db, project_name: str):
+    """Two opposing efficacy quotes used by the contradiction export cases."""
+    project = _make_project(db, project_name)
+    up_paper = _make_paper(db, project.id, "Vision Up Trial")
+    down_paper = _make_paper(db, project.id, "Vision Down Trial")
+    up = _make_claim(
+        db, up_paper.id, "Vision improved at month 12.",
+        is_limitation=False, claim_form="effect", direction="up",
+        topic="efficacy", quote_page=5,
+    )
+    down = _make_claim(
+        db, down_paper.id, "Vision declined at month 12.",
+        is_limitation=False, claim_form="effect", direction="down",
+        topic="efficacy", quote_page=11,
+    )
+    group = _make_group(
+        db, project.id, [up, down],
+        "efficacy direction conflict",
+        candidate_type=CandidateType.CONTRADICTION.value,
+        is_weak=False,
+    )
+    db.commit()
+    return project, up, down, group
+
+
+def _assert_contradiction_sides(body: str) -> None:
+    for piece in (
+        "双方证据",
+        "一方",
+        "另一方",
+        "Vision Up Trial",
+        "Vision Down Trial",
+        "Vision improved at month 12.",
+        "Vision declined at month 12.",
+        "第 5 页",
+        "第 11 页",
+    ):
+        assert piece in body
+
+
 class TestExportAcceptedMarkdown:
     def test_accepted_present_rejected_absent(self, client, db_session):
         project = _make_project(db_session, "Export Mix")
@@ -129,27 +169,7 @@ class TestExportAcceptedMarkdown:
         assert "P1_SECRET_LIMITATION" not in out2.text
 
     def test_contradiction_shows_both_quotes_and_pages(self, client, db_session):
-        project = _make_project(db_session, "Contra Export")
-        up_paper = _make_paper(db_session, project.id, "Vision Up Trial")
-        down_paper = _make_paper(db_session, project.id, "Vision Down Trial")
-        up = _make_claim(
-            db_session, up_paper.id, "Vision improved at month 12.",
-            is_limitation=False, claim_form="effect", direction="up",
-            topic="efficacy", quote_page=5,
-        )
-        down = _make_claim(
-            db_session, down_paper.id, "Vision declined at month 12.",
-            is_limitation=False, claim_form="effect", direction="down",
-            topic="efficacy", quote_page=11,
-        )
-        group = _make_group(
-            db_session, project.id, [up, down],
-            "efficacy direction conflict",
-            candidate_type=CandidateType.CONTRADICTION.value,
-            is_weak=False,
-        )
-        db_session.commit()
-
+        project, _up, _down, group = _seed_vision_contradiction(db_session, "Contra Export")
         acc = _accept(client, project.id, group.id, "Efficacy conflict")
         assert acc.status_code == 201, acc.text
 
@@ -159,39 +179,11 @@ class TestExportAcceptedMarkdown:
         assert "Efficacy conflict" in body
         assert "矛盾" in body
         assert "`contradiction`" in body
-        assert "双方证据" in body
-        assert "一方" in body
-        assert "另一方" in body
-        assert "Vision Up Trial" in body
-        assert "Vision Down Trial" in body
-        assert "Vision improved at month 12." in body
-        assert "Vision declined at month 12." in body
-        assert "第 5 页" in body
-        assert "第 11 页" in body
+        _assert_contradiction_sides(body)
 
     def test_export_keeps_snapshot_after_live_claims_deleted(self, client, db_session):
         """证据快照在采纳时冻结；删除原 claim 后导出仍含双方 quote 与页码."""
-        project = _make_project(db_session, "Snapshot Export")
-        up_paper = _make_paper(db_session, project.id, "Vision Up Trial")
-        down_paper = _make_paper(db_session, project.id, "Vision Down Trial")
-        up = _make_claim(
-            db_session, up_paper.id, "Vision improved at month 12.",
-            is_limitation=False, claim_form="effect", direction="up",
-            topic="efficacy", quote_page=5,
-        )
-        down = _make_claim(
-            db_session, down_paper.id, "Vision declined at month 12.",
-            is_limitation=False, claim_form="effect", direction="down",
-            topic="efficacy", quote_page=11,
-        )
-        group = _make_group(
-            db_session, project.id, [up, down],
-            "efficacy direction conflict",
-            candidate_type=CandidateType.CONTRADICTION.value,
-            is_weak=False,
-        )
-        db_session.commit()
-
+        project, up, down, group = _seed_vision_contradiction(db_session, "Snapshot Export")
         acc = _accept(client, project.id, group.id, "Efficacy conflict")
         assert acc.status_code == 201, acc.text
 
@@ -201,13 +193,4 @@ class TestExportAcceptedMarkdown:
 
         resp = _export(client, project.id)
         assert resp.status_code == 200, resp.text
-        body = resp.text
-        assert "双方证据" in body
-        assert "一方" in body
-        assert "另一方" in body
-        assert "Vision improved at month 12." in body
-        assert "Vision declined at month 12." in body
-        assert "第 5 页" in body
-        assert "第 11 页" in body
-        assert "Vision Up Trial" in body
-        assert "Vision Down Trial" in body
+        _assert_contradiction_sides(resp.text)
